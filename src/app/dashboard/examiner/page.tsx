@@ -6,7 +6,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import {
   ShieldCheck, BookOpen, Save, Loader2, AlertCircle, CheckCircle2,
-  Lock, Users, AlertTriangle, ChevronDown, Key, Flame,
+  Lock, Users, Sliders, AlertTriangle, ChevronDown, Key, Flame,
   Eye, EyeOff, ArrowLeftRight, GitMerge, Clock
 } from "lucide-react";
 import type { StudentMarkRecord, ModuleStats } from "@/types/hod";
