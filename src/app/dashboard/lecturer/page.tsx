@@ -182,6 +182,7 @@ export default function LecturerConsolePage() {
       id: 0, moduleCode: activeModule?.code ?? "",
       studentIndex: idx,
       caQuestionsMarks: {}, finalExamQuestionsMarks: {},
+      secondExamMarks: {},
       isAbsentCa: {}, isAbsentFinal: false,
     }]);
     setNewIndexInput("");
