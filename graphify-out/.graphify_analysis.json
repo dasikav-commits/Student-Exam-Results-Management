@@ -1,0 +1,385 @@
+{
+  "communities": {
+    "0": [
+      "dotenv",
+      "eslint",
+      "eslint_config_next",
+      "package_devdependencies",
+      "package_devdependencies_dotenv",
+      "package_devdependencies_eslint",
+      "package_devdependencies_eslint_config_next",
+      "package_devdependencies_prisma",
+      "package_devdependencies_tailwindcss",
+      "package_devdependencies_tailwindcss_postcss",
+      "package_devdependencies_tsx",
+      "package_devdependencies_types_bcrypt",
+      "package_devdependencies_types_node",
+      "package_devdependencies_types_pg",
+      "package_devdependencies_types_react",
+      "package_devdependencies_types_react_dom",
+      "package_devdependencies_typescript",
+      "prisma",
+      "tailwindcss",
+      "tailwindcss_postcss",
+      "tsx",
+      "types_bcrypt",
+      "types_node",
+      "types_pg",
+      "types_react",
+      "types_react_dom",
+      "typescript"
+    ],
+    "1": [
+      "bcrypt",
+      "hookform_resolvers",
+      "lucide_react",
+      "next",
+      "package_dependencies",
+      "package_dependencies_bcrypt",
+      "package_dependencies_hookform_resolvers",
+      "package_dependencies_lucide_react",
+      "package_dependencies_next",
+      "package_dependencies_pg",
+      "package_dependencies_prisma_adapter_pg",
+      "package_dependencies_prisma_client",
+      "package_dependencies_react",
+      "package_dependencies_react_dom",
+      "package_dependencies_react_hook_form",
+      "package_dependencies_zod",
+      "pg",
+      "prisma_adapter_pg",
+      "prisma_client",
+      "react",
+      "react_dom",
+      "react_hook_form",
+      "zod"
+    ],
+    "2": [
+      "src_app_api_admin_users_route",
+      "src_app_api_admin_users_route_delete",
+      "src_app_api_admin_users_route_get",
+      "src_app_api_admin_users_route_post",
+      "src_app_api_auth_login_route",
+      "src_app_api_auth_login_route_post",
+      "src_app_api_examiner_marks_route",
+      "src_app_api_examiner_marks_route_get",
+      "src_app_api_examiner_marks_route_patch",
+      "src_app_api_hod_lecturers_route",
+      "src_app_api_hod_lecturers_route_get",
+      "src_app_api_hod_lecturers_route_patch",
+      "src_app_api_hod_modules_route",
+      "src_app_api_hod_modules_route_get",
+      "src_app_api_hod_modules_route_patch",
+      "src_app_api_lecturer_marks_route",
+      "src_app_api_lecturer_marks_route_get",
+      "src_app_api_lecturer_marks_route_post",
+      "src_app_api_lecturer_marks_route_rationale_69",
+      "src_lib_prisma",
+      "src_lib_prisma_createprismaclient",
+      "src_lib_prisma_globalforprisma"
+    ],
+    "3": [
+      "src_app_layout",
+      "src_app_layout_geistmono",
+      "src_app_layout_geistsans",
+      "src_app_layout_metadata",
+      "src_app_layout_rootlayout",
+      "src_app_login_page",
+      "src_app_login_page_loginpage",
+      "src_app_login_page_rationale_20",
+      "src_components_layout_roleguard",
+      "src_components_layout_roleguard_roleguard",
+      "src_components_layout_roleguard_roleguardprops",
+      "src_context_authcontext",
+      "src_context_authcontext_authcontext",
+      "src_context_authcontext_authprovider",
+      "src_types_auth",
+      "src_types_auth_logininput",
+      "src_types_auth_loginschema",
+      "src_types_auth_userrole",
+      "src_types_user",
+      "src_types_user_authcontexttype",
+      "src_types_user_usersession"
+    ],
+    "4": [
+      "src_app_api_lecturer_modules_route",
+      "src_app_api_lecturer_modules_route_get",
+      "src_app_api_lecturer_modules_route_patch",
+      "src_app_dashboard_lecturer_page",
+      "src_app_dashboard_lecturer_page_blueprintsubtab",
+      "src_app_dashboard_lecturer_page_ca_types",
+      "src_app_dashboard_lecturer_page_calcrowtotal",
+      "src_app_dashboard_lecturer_page_lecturerconsolepage",
+      "src_app_dashboard_lecturer_page_maintab",
+      "src_app_dashboard_lecturer_page_markssubtab",
+      "src_app_dashboard_lecturer_page_score_modes",
+      "src_types_hod",
+      "src_types_hod_cacomponent",
+      "src_types_hod_departmentlecturer",
+      "src_types_hod_departmentmodule",
+      "src_types_hod_examquestionconfig",
+      "src_types_hod_finalblueprint",
+      "src_types_hod_lecturermodule",
+      "src_types_hod_marksheetstatus",
+      "src_types_hod_studentmarkrecord"
+    ],
+    "5": [
+      "ref_dom",
+      "ref_dom_iterable",
+      "ref_esnext",
+      "tsconfig_compileroptions",
+      "tsconfig_compileroptions_allowjs",
+      "tsconfig_compileroptions_esmoduleinterop",
+      "tsconfig_compileroptions_incremental",
+      "tsconfig_compileroptions_isolatedmodules",
+      "tsconfig_compileroptions_jsx",
+      "tsconfig_compileroptions_lib",
+      "tsconfig_compileroptions_module",
+      "tsconfig_compileroptions_moduleresolution",
+      "tsconfig_compileroptions_noemit",
+      "tsconfig_compileroptions_paths",
+      "tsconfig_compileroptions_plugins",
+      "tsconfig_compileroptions_resolvejsonmodule",
+      "tsconfig_compileroptions_skiplibcheck",
+      "tsconfig_compileroptions_strict",
+      "tsconfig_compileroptions_target"
+    ],
+    "6": [
+      "src_app_dashboard_admin_page",
+      "src_app_dashboard_admin_page_academicmodule",
+      "src_app_dashboard_admin_page_admindashboard",
+      "src_app_dashboard_admin_page_systemuser",
+      "src_app_dashboard_examiner_page",
+      "src_app_dashboard_examiner_page_examinerconsolepage",
+      "src_app_dashboard_examiner_page_exammodule",
+      "src_app_dashboard_hod_page",
+      "src_app_dashboard_hod_page_hodconsolepage",
+      "src_app_dashboard_hod_page_lecturerdata",
+      "src_app_dashboard_hod_page_marksheetstatus",
+      "src_app_dashboard_hod_page_moduledata",
+      "src_app_dashboard_hod_page_status_meta",
+      "src_app_dashboard_hod_page_statusbadge",
+      "src_context_authcontext_useauth",
+      "src_hooks_userequireauth",
+      "src_hooks_userequireauth_userequireauth",
+      "src_types_hod_modulestats"
+    ],
+    "7": [
+      "package",
+      "package_name",
+      "package_private",
+      "package_scripts",
+      "package_scripts_build",
+      "package_scripts_db_generate",
+      "package_scripts_db_push",
+      "package_scripts_db_seed",
+      "package_scripts_db_studio",
+      "package_scripts_dev",
+      "package_scripts_lint",
+      "package_scripts_start",
+      "package_version"
+    ],
+    "8": [
+      "ref_mts",
+      "ref_next_dev_types_ts",
+      "ref_next_env_d_ts",
+      "ref_next_types_ts",
+      "ref_node_modules",
+      "ref_ts",
+      "ref_tsx",
+      "tsconfig",
+      "tsconfig_exclude",
+      "tsconfig_include"
+    ],
+    "9": [
+      "prisma_seed",
+      "prisma_seed_adapter",
+      "prisma_seed_main",
+      "prisma_seed_pool",
+      "prisma_seed_prisma"
+    ],
+    "10": [
+      "src_types_lecturer",
+      "src_types_lecturer_evaluationmethodinput",
+      "src_types_lecturer_evaluationmethodschema",
+      "src_types_lecturer_managedmodule"
+    ],
+    "11": [
+      "src_types_admin",
+      "src_types_admin_systemcoursemodule",
+      "src_types_admin_systemuser"
+    ],
+    "12": [
+      "src_types_examiner",
+      "src_types_examiner_moderationtask",
+      "src_types_examiner_studentquestionmarkrow"
+    ],
+    "13": [
+      "eslint_config",
+      "eslint_config_eslintconfig"
+    ],
+    "14": [
+      "next_config",
+      "next_config_nextconfig"
+    ],
+    "15": [
+      "postcss_config",
+      "postcss_config_config"
+    ],
+    "16": [
+      "scripts_seed_users",
+      "scripts_seed_users_seeddatabase"
+    ],
+    "17": [
+      "src_app_page",
+      "src_app_page_rootpage"
+    ],
+    "18": [
+      "src_app_unauthorized_page",
+      "src_app_unauthorized_page_unauthorizedpage"
+    ],
+    "19": [
+      "src_lib_db",
+      "src_lib_db_globalforpool"
+    ],
+    "20": [
+      "prisma_config"
+    ]
+  },
+  "cohesion": {
+    "0": 0.07407407407407407,
+    "1": 0.08695652173913043,
+    "2": 0.09090909090909091,
+    "3": 0.14761904761904762,
+    "4": 0.1368421052631579,
+    "5": 0.10526315789473684,
+    "6": 0.20261437908496732,
+    "7": 0.15384615384615385,
+    "8": 0.2,
+    "9": 0.4,
+    "10": 0.5,
+    "11": 0.6666666666666666,
+    "12": 0.6666666666666666,
+    "13": 1.0,
+    "14": 1.0,
+    "15": 1.0,
+    "16": 1.0,
+    "17": 1.0,
+    "18": 1.0,
+    "19": 1.0,
+    "20": 1.0
+  },
+  "gods": [
+    {
+      "id": "tsconfig_compileroptions",
+      "label": "compilerOptions",
+      "degree": 16
+    },
+    {
+      "id": "src_context_authcontext_useauth",
+      "label": "useAuth()",
+      "degree": 15
+    },
+    {
+      "id": "src_hooks_userequireauth_userequireauth",
+      "label": "useRequireAuth()",
+      "degree": 10
+    },
+    {
+      "id": "package_scripts",
+      "label": "scripts",
+      "degree": 9
+    },
+    {
+      "id": "tsconfig_include",
+      "label": "include",
+      "degree": 7
+    },
+    {
+      "id": "src_types_auth_userrole",
+      "label": "UserRole",
+      "degree": 5
+    },
+    {
+      "id": "src_app_dashboard_lecturer_page_lecturerconsolepage",
+      "label": "LecturerConsolePage()",
+      "degree": 4
+    },
+    {
+      "id": "tsconfig_compileroptions_lib",
+      "label": "lib",
+      "degree": 4
+    },
+    {
+      "id": "src_app_dashboard_admin_page_admindashboard",
+      "label": "AdminDashboard()",
+      "degree": 3
+    },
+    {
+      "id": "src_app_dashboard_examiner_page_examinerconsolepage",
+      "label": "ExaminerConsolePage()",
+      "degree": 3
+    }
+  ],
+  "surprises": [
+    {
+      "source": "LoginPage()",
+      "target": "useAuth()",
+      "source_files": [
+        "src/app/login/page.tsx",
+        "src/context/AuthContext.tsx"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities; peripheral node `LoginPage()` unexpectedly reaches hub `useAuth()`"
+    },
+    {
+      "source": "RoleGuard()",
+      "target": "useAuth()",
+      "source_files": [
+        "src/components/layout/RoleGuard.tsx",
+        "src/context/AuthContext.tsx"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities; peripheral node `RoleGuard()` unexpectedly reaches hub `useAuth()`"
+    },
+    {
+      "source": "LecturerConsolePage()",
+      "target": "useAuth()",
+      "source_files": [
+        "src/app/dashboard/lecturer/page.tsx",
+        "src/context/AuthContext.tsx"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities"
+    },
+    {
+      "source": "LecturerConsolePage()",
+      "target": "useRequireAuth()",
+      "source_files": [
+        "src/app/dashboard/lecturer/page.tsx",
+        "src/hooks/useRequireAuth.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities"
+    },
+    {
+      "source": "RoleGuardProps",
+      "target": "UserRole",
+      "source_files": [
+        "src/components/layout/RoleGuard.tsx",
+        "src/types/auth.ts"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "why": "peripheral node `RoleGuardProps` unexpectedly reaches hub `UserRole`"
+    }
+  ],
+  "tokens": {
+    "input": 0,
+    "output": 0
+  }
+}

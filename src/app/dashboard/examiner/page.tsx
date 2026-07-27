@@ -1,127 +1,165 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { 
-  ShieldCheck, BookOpen, Save, Loader2, AlertCircle, CheckCircle2, Lock, Sparkles,
-  Users, Sliders, AlertTriangle, ChevronDown, Key, Flame
+import { useAuth } from "@/context/AuthContext";
+import { useRequireAuth } from "@/hooks/useRequireAuth";
+import {
+  ShieldCheck, BookOpen, Save, Loader2, AlertCircle, CheckCircle2,
+  Lock, Users, Sliders, AlertTriangle, ChevronDown, Key, Flame,
+  Eye, EyeOff, ArrowLeftRight
 } from "lucide-react";
+import type { StudentMarkRecord, ModuleStats } from "@/types/hod";
 
-interface ExaminerStudentRow {
-  studentIndex: string;
-  examMarksSecond: Record<string, number>; // Q1 -> Q8 tracking
-  finalTheoryFirst: number;                // First marker baseline score for reference
-  isAbsent: boolean;
+interface ExamModule {
+  id: number;
+  code: string;
+  name: string;
+  credits: number;
+  isFrozen: boolean;
+  stats: ModuleStats;
+  assignedActiveLec?: { id: number; fullName: string } | null;
 }
 
 export default function ExaminerConsolePage() {
   const router = useRouter();
-  const [modules, setModules] = useState<any[]>([]);
-  const [activeModule, setActiveModule] = useState<any | null>(null);
-  const [students, setStudents] = useState<ExaminerStudentRow[]>([]);
-  
+  const { user } = useRequireAuth();
+  const { logout } = useAuth();
+
+  const [modules, setModules] = useState<ExamModule[]>([]);
+  const [activeModule, setActiveModule] = useState<ExamModule | null>(null);
+  const [students, setStudents] = useState<StudentMarkRecord[]>([]);
+
   const [isPageLoading, setIsPageLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
-
-  // Workspace Navigation Menu Dropdown State
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
+  const [varianceThreshold, setVarianceThreshold] = useState(5);
+  const [showActiveLecMarks, setShowActiveLecMarks] = useState(true);
 
-  // Dynamic security capability matrix. Set isHOD to false to see the lock guard activate.
-  const userCapabilities = {
-    isHOD: false,      
-    isActiveLec: true,
-    isExamLec: true
-  };
+  const userCapabilities = user?.capabilities ?? { isHOD: false, isActiveLec: false, isExamLec: true };
 
-  const handleWorkspaceSwitch = (workspace: "LECTURER" | "HOD" | "EXAMINER") => {
+  const handleWorkspaceSwitch = (ws: "LECTURER" | "HOD") => {
     setIsRoleMenuOpen(false);
-    if (workspace === "LECTURER") router.push("/dashboard/lecturer");
-    if (workspace === "HOD" && userCapabilities.isHOD) router.push("/dashboard/hod");
-    if (workspace === "EXAMINER") router.push("/dashboard/examiner");
+    if (ws === "LECTURER") router.push("/dashboard/lecturer");
+    if (ws === "HOD") router.push("/dashboard/hod");
   };
 
-  // Dynamic sensitivity configuration thresholds
-  const [varianceThreshold, setVarianceThreshold] = useState<number>(5);
-
-  const questionsList = ["Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8"];
-
+  // ── Load modules assigned to this examiner ────────────────────────────────
   useEffect(() => {
-    async function loadExaminerWorkload() {
+    if (!user || !user.email) {
+      setIsPageLoading(false);
+      return;
+    }
+
+    async function load() {
+      setIsPageLoading(true);
       try {
-        const res = await fetch("/api/examiner/marks");
+        const res = await fetch(`/api/examiner/marks?email=${encodeURIComponent(user!.email)}`);
         if (res.ok) {
-          const data = await res.json();
+          const data: ExamModule[] = await res.json();
           setModules(data);
-          if (data.length > 0) selectModule(data[0]);
+          if (data.length > 0) await selectModule(data[0]);
         }
       } catch (err) {
-        console.error("Failed handling pipeline handshakes:", err);
+        console.error("Error loading examiner modules:", err);
       } finally {
         setIsPageLoading(false);
       }
     }
-    loadExaminerWorkload();
-  }, []);
+    load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email]);
 
-  const selectModule = async (mod: any) => {
+  const selectModule = useCallback(async (mod: ExamModule) => {
     setActiveModule(mod);
     setFeedback(null);
+    setStudents([]);
     try {
-      const res = await fetch(`/api/examiner/marks?moduleCode=${mod.code}`);
-      if (res.ok) {
-        const data = await res.json();
-        setStudents(data);
-      }
+      const res = await fetch(`/api/examiner/marks?moduleCode=${encodeURIComponent(mod.code)}`);
+      if (res.ok) setStudents(await res.json());
     } catch (err) {
-      console.error("Error setting grading matrix window instances:", err);
+      console.error("Error loading marks:", err);
     }
+  }, []);
+
+  // ── Blueprint helpers ──────────────────────────────────────────────────────
+  const finalBp = (activeModule?.stats as any)?.finalBlueprint;
+  const questionCount = finalBp?.totalQuestions ?? 8;
+  const marksPerQ = finalBp?.marksPerQuestion ?? 10;
+  const scoreMode: "SUM" | "AVG" = finalBp?.scoreMode ?? "SUM";
+  const questionsToAnswer: number = finalBp?.questionsToAnswer ?? questionCount;
+  const questionsList = Array.from({ length: questionCount }, (_, i) => `Q${i + 1}`);
+
+  const calcTotal = (marks: Record<string, number>): number => {
+    const vals = Object.values(marks).slice(0, questionsToAnswer).map(v => Number(v) || 0);
+    const sum = vals.reduce((a, b) => a + b, 0);
+    return scoreMode === "AVG" && questionsToAnswer > 0 ? sum / questionsToAnswer : sum;
   };
 
-  const updateQuestionMark = (studentIndex: string, questionKey: string, score: number) => {
-    setStudents(students.map(s => {
-      if (s.studentIndex === studentIndex) {
-        return {
-          ...s,
-          examMarksSecond: { ...s.examMarksSecond, [questionKey]: Math.min(100, Math.max(0, score)) }
-        };
-      }
-      return s;
+  // ── Update SECOND EXAM marks (examiner's own entry) ────────────────────────
+  const updateSecondMark = (studentIndex: string, q: string, val: number) => {
+    setStudents(prev => prev.map(s => {
+      if (s.studentIndex !== studentIndex) return s;
+      const sm = { ...(s.secondExamMarks ?? {}), [q]: Math.min(marksPerQ, Math.max(0, val)) };
+      return { ...s, secondExamMarks: sm };
     }));
   };
 
-  const calculateRowTotal = (student: ExaminerStudentRow) => {
-    if (student.isAbsent) return "AB";
-    return questionsList.reduce((sum, q) => sum + (student.examMarksSecond[q] || 0), 0);
-  };
+  // ── Stats ──────────────────────────────────────────────────────────────────
+  const absentCount = students.filter(s => s.isAbsentFinal).length;
 
-  // Variance statistics generators mapping down across the ledger matrices
-  const totalStudentsCount = students.length;
-  const absentCount = students.filter(s => s.isAbsent).length;
-  const activeVarianceCount = students.filter(s => {
-    if (s.isAbsent) return false;
-    const total = calculateRowTotal(s);
-    return Math.abs(s.finalTheoryFirst - (Number(total) || 0)) > varianceThreshold;
-  }).length;
+  const flaggedStudents = students.filter(s => {
+    if (s.isAbsentFinal) return false;
+    const activeLecTotal = calcTotal(s.finalExamQuestionsMarks ?? {});
+    const examTotal = calcTotal(s.secondExamMarks ?? {});
+    const hasExamMarks = Object.keys(s.secondExamMarks ?? {}).length > 0;
+    return hasExamMarks && Math.abs(activeLecTotal - examTotal) > varianceThreshold;
+  });
 
-  const handleSaveSecondMarking = async () => {
+  const isFinalized = (activeModule?.stats as any)?.marksheetStatus === "FINALIZED";
+
+  const handleSave = async (finalize = false) => {
     if (!activeModule) return;
     setIsSaving(true);
     setFeedback(null);
-
     try {
       const res = await fetch("/api/examiner/marks", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ moduleCode: activeModule.code, students })
+        body: JSON.stringify({
+          moduleCode: activeModule.code,
+          finalize,
+          students: students.map(s => ({
+            studentIndex: s.studentIndex,
+            secondExamMarks: s.secondExamMarks ?? {},
+            isAbsentFinal: s.isAbsentFinal,
+          })),
+        }),
       });
+      const result = await res.json();
       if (res.ok) {
-        setFeedback({ type: "success", text: "Second marking matrix committed successfully to secure records storage." });
+        const msg = finalize
+          ? "Marking finalized. The Active Lecturer can now see your marks for comparison."
+          : "Second marking saved successfully.";
+        setFeedback({ type: "success", text: msg });
+        if (finalize) {
+          setModules(prev =>
+            prev.map(m => m.code === activeModule.code
+              ? { ...m, stats: { ...(m.stats as any), marksheetStatus: "FINALIZED" } }
+              : m
+            )
+          );
+          setActiveModule(prev => prev
+            ? { ...prev, stats: { ...(prev.stats as any), marksheetStatus: "FINALIZED" } }
+            : null
+          );
+        }
       } else {
-        setFeedback({ type: "error", text: "Database rejected second marking packet submission criteria arrays." });
+        setFeedback({ type: "error", text: result.error ?? "Failed to save marks." });
       }
-    } catch (err) {
-      setFeedback({ type: "error", text: "Network verification handshake fault timed out." });
+    } catch {
+      setFeedback({ type: "error", text: "Network error. Please retry." });
     } finally {
       setIsSaving(false);
     }
@@ -129,281 +167,384 @@ export default function ExaminerConsolePage() {
 
   if (isPageLoading) {
     return (
-      <div className="min-h-screen bg-cream-canvas flex flex-col justify-center items-center">
-        <Loader2 className="h-6 w-6 text-indigo-600 animate-spin" />
-        <p className="mt-4 text-[11px] font-bold text-neutral-400 tracking-widest uppercase">Syncing Examiner Security Profile Access Node...</p>
+      <div className="min-h-screen bg-cream-canvas flex flex-col items-center justify-center gap-4">
+        <Loader2 className="h-8 w-8 text-amber-500 animate-spin" />
+        <p className="text-xs font-bold text-neutral-400 tracking-widest uppercase">Syncing Examiner Workload…</p>
       </div>
     );
   }
 
   return (
-    <div className="w-full min-h-screen bg-cream-canvas p-4 sm:p-8 text-[#1a1a1a]">
-      <div className="max-w-7xl mx-auto space-y-8">
-        
-        {/* Module Header Identity Badge + Enforced Security Dropdown Switcher */}
-        <div className="w-full bg-white rounded-2xl premium-border p-6 sm:p-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-          <div className="space-y-2">
-            <div className="inline-flex items-center space-x-2 text-[11px] font-bold uppercase tracking-wider text-amber-600 bg-amber-50 px-3 py-1 rounded-full border border-amber-100">
-              <ShieldCheck className="h-3 w-3" />
-              <span>Internal Examiner Moderation Interface Terminal</span>
+    <div className="w-full min-h-screen bg-cream-canvas text-[#1a1a1a]">
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="sticky top-0 z-40 bg-white border-b border-neutral-200/80 px-6 py-3">
+        <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-500 flex items-center justify-center">
+              <ShieldCheck className="h-5 w-5 text-white" />
             </div>
-            <h1 className="text-3xl font-bold tracking-tight">Examiner Verification Desk</h1>
-            <p className="text-sm text-neutral-500 font-medium">
-              Authorized Evaluator Identity Context Account: <span className="text-[#1a1a1a] font-semibold underline underline-offset-4 decoration-amber-500">Dr. Deepani Wijesekara</span>
-            </p>
+            <div>
+              <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Wayamba Exam Portal</p>
+              <h1 className="text-sm font-black text-[#1a1a1a] leading-none">Second Examiner Console</h1>
+            </div>
           </div>
 
-          {/* INTERACTIVE DESK ROLE SWITCHER CONFIGURATION */}
-          <div className="relative self-end md:self-center">
-            <button 
-              onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
-              className="flex items-center space-x-3 bg-neutral-900 text-white hover:bg-neutral-800 px-4 py-2.5 rounded-xl text-xs font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 cursor-pointer select-none"
-            >
-              <div className="flex items-center space-x-2">
-                <Flame className="h-3.5 w-3.5 text-amber-400 fill-amber-400" />
+          <div className="flex items-center gap-3">
+            <span className="hidden sm:block text-xs text-neutral-500 font-medium">{user?.fullName ?? user?.email}</span>
+
+            <div className="relative">
+              <button
+                onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
+                className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-600 text-white text-xs font-bold hover:bg-amber-700 transition-all cursor-pointer"
+              >
+                <Flame className="h-3.5 w-3.5" />
                 <span>Examiner Hub</span>
-              </div>
-              <ChevronDown className={`h-3.5 w-3.5 text-neutral-400 transition-transform duration-200 ${isRoleMenuOpen ? "rotate-180" : ""}`} />
-            </button>
-
-            {isRoleMenuOpen && (
-              <>
-                {/* Backdrop Click Shield overlay to cleanly close on clicking outside area */}
-                <div className="fixed inset-0 z-40" onClick={() => setIsRoleMenuOpen(false)} />
-                
-                <div className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-neutral-200/70 p-1.5 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
-                  <div className="px-3 py-1.5 text-[10px] font-bold text-neutral-400 uppercase tracking-wider select-none border-b border-neutral-100 pb-2 mb-1">
-                    Switch Workspaces
+                <ChevronDown className={`h-3 w-3 transition-transform ${isRoleMenuOpen ? "rotate-180" : ""}`} />
+              </button>
+              {isRoleMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setIsRoleMenuOpen(false)} />
+                  <div className="absolute right-0 mt-2 w-56 bg-white border border-neutral-200 rounded-xl shadow-xl p-1.5 z-20 space-y-0.5 text-xs">
+                    <div className="px-3 py-2 border-b border-neutral-100 mb-1">
+                      <span className="font-black text-[#1a1a1a]">{user?.fullName}</span>
+                      <span className="block text-[10px] text-neutral-400">{user?.email}</span>
+                    </div>
+                    {userCapabilities.isActiveLec && (
+                      <button onClick={() => handleWorkspaceSwitch("LECTURER")} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-neutral-50 text-neutral-700 font-semibold cursor-pointer">
+                        <Sliders className="h-3.5 w-3.5 text-neutral-400" /><span>Lecturer Desk</span>
+                      </button>
+                    )}
+                    {userCapabilities.isHOD && (
+                      <button onClick={() => handleWorkspaceSwitch("HOD")} className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-neutral-50 text-neutral-700 font-semibold cursor-pointer">
+                        <Key className="h-3.5 w-3.5 text-neutral-400" /><span>HOD Console</span>
+                      </button>
+                    )}
+                    <button disabled className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-amber-50 text-amber-700 font-bold cursor-default">
+                      <Flame className="h-3.5 w-3.5" /><span>Examiner Hub (Active)</span>
+                    </button>
+                    <div className="border-t border-neutral-100 pt-1 mt-1">
+                      <button onClick={logout} className="w-full text-left px-3 py-2 text-rose-600 font-semibold rounded-lg hover:bg-rose-50 cursor-pointer">Sign Out</button>
+                    </div>
                   </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
 
-                  {/* Option 1: Lecturer Desk Context Selection */}
-                  {userCapabilities.isActiveLec && (
-                    <button 
-                      onClick={() => handleWorkspaceSwitch("LECTURER")}
-                      className="w-full flex items-center space-x-3 px-3 py-2 hover:bg-neutral-50 text-left rounded-lg text-neutral-700 transition-colors duration-150 focus:outline-none cursor-pointer"
-                    >
-                      <Sliders className="h-4 w-4 text-neutral-400" />
-                      <div className="space-y-0.5">
-                        <span className="block text-xs font-bold text-neutral-800">Lecturer Desk</span>
-                        <span className="block text-[10px] text-neutral-400 font-normal">Continuous Assessments & Marks entry</span>
-                      </div>
-                    </button>
-                  )}
+      {/* ── Main Content ───────────────────────────────────────────────────── */}
+      <div className="max-w-screen-2xl mx-auto p-4 sm:p-6">
 
-                  {/* Option 2: HOD Suite with Enforced Authority Level Guards */}
-                  {userCapabilities.isHOD ? (
-                    <button 
-                      onClick={() => handleWorkspaceSwitch("HOD")}
-                      className="w-full flex items-center space-x-3 px-3 py-2 hover:bg-neutral-50 text-left rounded-lg text-neutral-700 transition-colors duration-150 focus:outline-none cursor-pointer"
-                    >
-                      <Key className="h-4 w-4 text-neutral-400" />
-                      <div className="space-y-0.5">
-                        <span className="block text-xs font-bold text-neutral-800">HOD Management Suite</span>
-                        <span className="block text-[10px] text-neutral-400 font-normal">Curriculum approvals & batch freezing</span>
-                      </div>
-                    </button>
-                  ) : (
-                    <div className="w-full flex items-center space-x-3 px-3 py-2 text-left rounded-lg text-neutral-300 bg-neutral-50/40 select-none cursor-not-allowed">
-                      <Lock className="h-4 w-4 text-neutral-300 shrink-0" />
-                      <div className="space-y-0.5">
-                        <span className="block text-xs font-bold text-neutral-400">HOD Management Suite</span>
-                        <span className="block text-[10px] text-neutral-300 font-normal leading-tight">Access restricted to Head of Department</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Option 3: Examiner Moderation Desk (Current Selection Status) */}
-                  <button 
-                    disabled
-                    className="w-full flex items-center space-x-3 px-3 py-2 bg-amber-50/50 text-left rounded-lg text-amber-900 opacity-90 cursor-default focus:outline-none mt-1"
-                  >
-                    <Flame className="h-4 w-4 text-amber-500 fill-amber-500" />
-                    <div className="space-y-0.5">
-                      <span className="block text-xs font-extrabold text-amber-950">Examiner Hub (Active)</span>
-                      <span className="block text-[10px] text-amber-700/70 font-medium">Internal examiner paper verification</span>
-                    </div>
-                  </button>
-                </div>
-              </>
-            )}
+        {/* Role info banner */}
+        <div className="mb-5 bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+          <div className="p-2 bg-amber-100 rounded-lg shrink-0">
+            <ShieldCheck className="h-4 w-4 text-amber-700" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-amber-800">Second Examiner Access</p>
+            <p className="text-[11px] text-amber-700 mt-0.5">
+              You can enter your own independent marks for each student&apos;s final exam.
+              The active lecturer&apos;s marks are shown as a <strong>guided reference</strong>.
+              Your marks will only be visible to the active lecturer after you click <strong>Finalize Marking</strong>.
+            </p>
           </div>
         </div>
 
-        {/* Dynamic Analytics & Variance Tuning Controls Desk */}
+        {/* Analytics row */}
         {activeModule && (
-          <div className="w-full grid grid-cols-1 md:grid-cols-3 gap-5 bg-white rounded-2xl premium-border p-5 shadow-sm">
-            <div className="flex items-center space-x-4 p-3 bg-neutral-50/60 rounded-xl border border-neutral-100">
-              <div className="p-3 bg-indigo-50 text-indigo-600 rounded-lg">
-                <Users className="h-5 w-5" />
-              </div>
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-5">
+            <div className="bg-white rounded-xl premium-border p-4 flex items-center gap-3">
+              <div className="p-2.5 bg-indigo-50 rounded-lg"><Users className="h-5 w-5 text-indigo-600" /></div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Total Track Roster</p>
-                <p className="text-xl font-black text-neutral-800">{totalStudentsCount} <span className="text-xs font-medium text-neutral-400">({absentCount} AB)</span></p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Total Students</p>
+                <p className="text-xl font-black">{students.length} <span className="text-xs font-medium text-neutral-400">({absentCount} AB)</span></p>
               </div>
             </div>
 
-            <div className="flex items-center space-x-4 p-3 bg-neutral-50/60 rounded-xl border border-neutral-100">
-              <div className={`p-3 rounded-lg ${activeVarianceCount > 0 ? "bg-rose-50 text-rose-600 animate-pulse" : "bg-emerald-50 text-emerald-600"}`}>
-                <AlertTriangle className="h-5 w-5" />
+            <div className="bg-white rounded-xl premium-border p-4 flex items-center gap-3">
+              <div className={`p-2.5 rounded-lg ${flaggedStudents.length > 0 ? "bg-rose-50 animate-pulse" : "bg-emerald-50"}`}>
+                <AlertTriangle className={`h-5 w-5 ${flaggedStudents.length > 0 ? "text-rose-600" : "text-emerald-600"}`} />
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Total Variance Flags</p>
-                <p className="text-xl font-black text-neutral-800">
-                  {activeVarianceCount} <span className="text-xs font-medium text-neutral-400">raised</span>
-                </p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Variance Flags</p>
+                <p className="text-xl font-black">{flaggedStudents.length}</p>
               </div>
             </div>
 
-            <div className="flex flex-col justify-center px-4 py-2 bg-amber-50/20 rounded-xl border border-amber-100/60">
-              <div className="flex justify-between items-center mb-1.5">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-800 flex items-center gap-1">
-                  <Sliders className="h-3 w-3" /> Variance Tolerance
-                </span>
-                <span className="text-xs font-black bg-amber-500 text-white px-1.5 py-0.5 rounded text-center min-w-[24px]">
-                  ±{varianceThreshold}
-                </span>
+            <div className="bg-white rounded-xl premium-border p-4 flex flex-col justify-center gap-1.5">
+              <div className="flex justify-between items-center">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 flex items-center gap-1"><Sliders className="h-3 w-3" />Variance Tolerance</span>
+                <span className="text-xs font-black bg-amber-500 text-white px-1.5 py-0.5 rounded">±{varianceThreshold}</span>
               </div>
-              <input 
-                type="range" 
-                min="1" 
-                max="20" 
-                value={varianceThreshold}
-                onChange={(e) => setVarianceThreshold(Number(e.target.value))}
-                className="w-full accent-amber-600 h-1.5 bg-neutral-200 rounded-lg appearance-none cursor-pointer"
-              />
+              <input type="range" min="1" max="20" value={varianceThreshold} onChange={e => setVarianceThreshold(Number(e.target.value))} className="w-full accent-amber-600 h-1.5 rounded-full cursor-pointer" />
+            </div>
+
+            <div className="bg-white rounded-xl premium-border p-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Active Lec Marks</p>
+                <p className="text-xs font-semibold text-neutral-600 mt-0.5">Guided reference column</p>
+              </div>
+              <button
+                onClick={() => setShowActiveLecMarks(v => !v)}
+                className={`p-2.5 rounded-lg transition-all cursor-pointer ${showActiveLecMarks ? "bg-indigo-100 text-indigo-700" : "bg-neutral-100 text-neutral-400"}`}
+                title={showActiveLecMarks ? "Hide active lecturer marks" : "Show active lecturer marks"}
+              >
+                {showActiveLecMarks ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+              </button>
             </div>
           </div>
         )}
 
-        <div className="w-full grid grid-cols-1 lg:grid-cols-4 gap-6 items-start">
-          
-          {/* Side Panel: Course Module Allocations */}
-          <div className="bg-white rounded-2xl premium-border overflow-hidden">
-            <div className="p-5 border-b border-neutral-200/60 bg-neutral-50/50 flex items-center space-x-2.5">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-5 items-start">
+          {/* ── Module sidebar ──────────────────────────────────────────── */}
+          <aside className="bg-white rounded-2xl premium-border overflow-hidden sticky top-20">
+            <div className="p-4 border-b border-neutral-200 bg-neutral-50/60 flex items-center gap-2">
               <BookOpen className="h-4 w-4 text-neutral-500" />
-              <h2 className="font-bold text-sm uppercase tracking-wider">Your Moderation Workload</h2>
+              <h2 className="font-bold text-xs uppercase tracking-wider text-neutral-600">Moderation Workload</h2>
             </div>
             <div className="divide-y divide-neutral-100">
-              {modules.map((mod) => {
-                const isSelected = activeModule?.code === mod.code;
+              {modules.length === 0 && (
+                <p className="p-6 text-center text-xs text-neutral-400 italic">No modules assigned to you as examiner.</p>
+              )}
+              {modules.map(mod => {
+                const sel = activeModule?.code === mod.code;
+                const status = (mod.stats as any)?.marksheetStatus as string | undefined;
+                const statusColors: Record<string, string> = {
+                  DRAFT: "text-neutral-400",
+                  MARKING: "text-amber-600",
+                  SECOND_CHECKING: "text-indigo-600",
+                  FINALIZED: "text-emerald-600",
+                };
                 return (
-                  <button
-                    key={mod.id}
-                    onClick={() => selectModule(mod)}
-                    className={`w-full text-left p-5 transition-all flex justify-between items-center cursor-pointer ${
-                      isSelected ? "bg-amber-50/40 border-r-4 border-amber-500" : "hover:bg-neutral-50/40"
-                    }`}
-                  >
+                  <button key={mod.id} onClick={() => selectModule(mod)} className={`w-full text-left p-4 transition-all flex justify-between items-center cursor-pointer ${sel ? "bg-amber-50/60 border-r-4 border-amber-500" : "hover:bg-neutral-50/50"}`}>
                     <div>
-                      <p className={`font-bold text-sm ${isSelected ? "text-amber-600" : "text-[#1a1a1a]"}`}>{mod.code}</p>
-                      <p className="text-xs text-neutral-400 font-normal mt-0.5">{mod.name}</p>
+                      <p className={`font-bold text-sm ${sel ? "text-amber-600" : ""}`}>{mod.code}</p>
+                      <p className="text-[11px] text-neutral-400 mt-0.5 leading-tight">{mod.name}</p>
+                      {status && (
+                        <p className={`text-[10px] font-bold mt-0.5 uppercase tracking-wide ${statusColors[status] ?? "text-neutral-400"}`}>{status}</p>
+                      )}
                     </div>
+                    {mod.isFrozen && <Lock className="h-3.5 w-3.5 text-neutral-400 shrink-0" />}
                   </button>
                 );
               })}
             </div>
-          </div>
+          </aside>
 
-          {/* Core Interactive Marks Sheet Grid System Workspace */}
+          {/* ── Second Marking Grid ─────────────────────────────────────── */}
           <div className="lg:col-span-3 bg-white rounded-2xl premium-border overflow-hidden">
-            {activeModule ? (
+            {!activeModule ? (
+              <div className="p-16 text-center text-sm text-neutral-400 italic">Select a module to begin second marking.</div>
+            ) : (
               <>
-                <div className="p-5 border-b border-neutral-200 bg-neutral-50/50 flex justify-between items-center">
-                  <h3 className="font-bold text-sm uppercase tracking-wider text-neutral-800">
-                    Evaluation Moderation Ledger Spreadsheet Matrix: {activeModule.code}
-                  </h3>
+                <div className="p-5 border-b border-neutral-200 bg-neutral-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-bold text-sm">{activeModule.code} — Second Examiner Ledger</h3>
+                      {isFinalized && (
+                        <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                          <CheckCircle2 className="h-3 w-3" />FINALIZED
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-neutral-400 mt-0.5">
+                      {questionsList.length} questions · {questionsToAnswer} to answer · {marksPerQ} marks/q · {scoreMode} mode
+                    </p>
+                    {activeModule.assignedActiveLec && (
+                      <p className="text-[11px] text-neutral-500 mt-1">Active Lec: <span className="font-bold text-neutral-700">{activeModule.assignedActiveLec.fullName}</span></p>
+                    )}
+                  </div>
+                  {activeModule.isFrozen && (
+                    <span className="flex items-center gap-1.5 text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg">
+                      <Lock className="h-3.5 w-3.5" />Frozen by HOD
+                    </span>
+                  )}
                 </div>
 
-                <div className="p-6 space-y-6">
+                <div className="p-5 space-y-4">
                   {feedback && (
-                    <div className={`p-4 rounded-xl border flex items-start space-x-2.5 text-xs font-semibold ${
-                      feedback.type === "success" ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-rose-50 border-rose-200 text-rose-800"
-                    }`}>
+                    <div className={`p-3.5 rounded-xl border flex items-start gap-2.5 text-xs font-semibold ${feedback.type === "success" ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-rose-50 border-rose-200 text-rose-800"}`}>
                       {feedback.type === "success" ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <AlertCircle className="h-4 w-4 shrink-0" />}
-                      <span>{feedback.text}</span>
+                      {feedback.text}
                     </div>
                   )}
 
-                  <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse text-xs">
+                  {students.length === 0 ? (
+                    <div className="border-2 border-dashed border-neutral-200 rounded-xl p-10 text-center text-sm text-neutral-400 italic">
+                      No student mark records found for this module.<br />
+                      <span className="text-xs">The active lecturer must save marks first.</span>
+                    </div>
+                  ) : (
+                    <div className="border border-neutral-200 rounded-xl overflow-auto">
+                      <table className="w-full text-xs border-collapse">
                         <thead>
                           <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200 text-center">
-                            <th className="p-4 w-12 border-r border-neutral-200">S. No</th>
-                            <th className="p-4 w-28 text-left border-r border-neutral-200">Examination No.</th>
-                            {questionsList.map(q => (
-                              <th key={q} className="p-2 border-r border-neutral-100 bg-amber-50/20 font-semibold text-amber-900 w-12">{q}</th>
+                            <th className="px-4 py-3 w-10 text-left">#</th>
+                            <th className="px-4 py-3 w-32 text-left">Student ID</th>
+
+                            {/* Active Lec columns (guided reference) */}
+                            {showActiveLecMarks && questionsList.map(q => (
+                              <th key={`lec-${q}`} className="px-2 py-3 bg-indigo-50/60 text-indigo-700 w-14">
+                                <span className="block text-[8px] font-normal text-indigo-400 leading-none mb-0.5">Lec</span>
+                                {q}<span className="block text-[9px] text-neutral-400 font-normal">/{marksPerQ}</span>
+                              </th>
                             ))}
-                            <th className="p-4 bg-amber-100/40 text-amber-800 font-extrabold w-16 border-r border-neutral-200">Total</th>
-                            <th className="p-4 bg-indigo-50 text-indigo-800 font-bold w-24 border-r border-neutral-200">First Marking<br/>(60%) (C)</th>
-                            <th className="p-4 bg-emerald-50 text-emerald-800 font-bold w-24">Second Marking<br/>(60%) (D)</th>
+                            {showActiveLecMarks && (
+                              <th className="px-4 py-3 bg-indigo-100/60 text-indigo-700 font-extrabold w-16">
+                                <span className="block text-[8px] font-normal text-indigo-400 leading-none mb-0.5">Lec</span>
+                                Total
+                              </th>
+                            )}
+
+                            {/* Divider header */}
+                            {showActiveLecMarks && (
+                              <th className="px-2 py-3 w-8 bg-neutral-100">
+                                <ArrowLeftRight className="h-3 w-3 mx-auto text-neutral-400" />
+                              </th>
+                            )}
+
+                            {/* Second Examiner columns (editable) */}
+                            {questionsList.map(q => (
+                              <th key={`exam-${q}`} className="px-2 py-3 bg-amber-50/70 text-amber-800 w-14">
+                                <span className="block text-[8px] font-normal text-amber-500 leading-none mb-0.5">2nd</span>
+                                {q}<span className="block text-[9px] text-neutral-400 font-normal">/{marksPerQ}</span>
+                              </th>
+                            ))}
+                            <th className="px-4 py-3 bg-amber-100/60 text-amber-800 font-extrabold w-16">
+                              <span className="block text-[8px] font-normal text-amber-500 leading-none mb-0.5">2nd</span>
+                              Total
+                            </th>
+
+                            {/* Variance column (only shown if both sets exist) */}
+                            {showActiveLecMarks && (
+                              <th className="px-4 py-3 text-center w-16 bg-rose-50/50 text-rose-700">Δ Var</th>
+                            )}
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-neutral-100 font-semibold text-center text-neutral-700">
-                          {students.map((student, idx) => {
-                            const secondTotal = calculateRowTotal(student);
-                            const hasVariance = !student.isAbsent && Math.abs(student.finalTheoryFirst - (Number(secondTotal) || 0)) > varianceThreshold;
+                        <tbody className="divide-y divide-neutral-100">
+                          {students.map((s, idx) => {
+                            const absent = s.isAbsentFinal;
+                            const lecFm = s.finalExamQuestionsMarks ?? {};
+                            const examFm = s.secondExamMarks ?? {};
+                            const lecTotal = absent ? null : calcTotal(lecFm);
+                            const examTotal = absent ? null : calcTotal(examFm);
+                            const hasExamMarks = Object.keys(examFm).length > 0;
+                            const variance = lecTotal !== null && examTotal !== null && hasExamMarks
+                              ? Math.abs(lecTotal - examTotal)
+                              : null;
+                            const flagged = variance !== null && variance > varianceThreshold;
 
                             return (
-                              <tr key={student.studentIndex} className={`hover:bg-neutral-50/40 transition-colors ${student.isAbsent ? "bg-neutral-100/70 text-neutral-400 line-through" : ""} ${hasVariance ? "bg-rose-50/40 border-l-2 border-rose-500" : ""}`}>
-                                <td className="p-4 font-bold text-neutral-400 border-r border-neutral-200">{idx + 1}</td>
-                                <td className="p-4 text-left font-bold text-neutral-900 uppercase tracking-wider border-r border-neutral-200">{student.studentIndex}</td>
-                                
-                                {questionsList.map(q => (
-                                  <td key={q} className="p-2 border-r border-neutral-100">
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      max="100"
-                                      disabled={activeModule.isFrozen || student.isAbsent}
-                                      value={student.examMarksSecond[q] ?? ""}
-                                      placeholder="0"
-                                      onChange={(e) => updateQuestionMark(student.studentIndex, q, parseInt(e.target.value, 10) || 0)}
-                                      className="w-10 bg-white border border-neutral-200 rounded py-1 text-center font-bold text-xs focus:outline-none focus:border-amber-400 disabled:opacity-40"
-                                    />
+                              <tr key={s.studentIndex} className={`transition-colors ${absent ? "bg-neutral-100/60 text-neutral-400 line-through" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/30"}`}>
+                                <td className="px-4 py-3 font-bold text-neutral-400">{idx + 1}</td>
+                                <td className="px-4 py-3 font-bold tracking-wider uppercase">{s.studentIndex}</td>
+
+                                {/* Active Lec read-only guided cells */}
+                                {showActiveLecMarks && questionsList.map(q => (
+                                  <td key={`lec-${q}`} className="px-2 py-3 bg-indigo-50/20 text-center">
+                                    {absent ? (
+                                      <span className="text-neutral-400 font-bold text-[11px]">AB</span>
+                                    ) : (
+                                      <span className="inline-block w-10 py-1 text-center text-xs font-bold text-indigo-700 bg-indigo-50 rounded border border-indigo-100">
+                                        {lecFm[q] ?? "—"}
+                                      </span>
+                                    )}
                                   </td>
                                 ))}
+                                {showActiveLecMarks && (
+                                  <td className="px-4 py-3 text-center font-extrabold text-indigo-600 bg-indigo-50/20">
+                                    {absent ? "AB" : (lecTotal?.toFixed(1) ?? "—")}
+                                  </td>
+                                )}
 
-                                <td className="p-4 bg-amber-50/60 font-extrabold text-amber-700 text-xs border-r border-neutral-200">
-                                  {secondTotal}
-                                </td>
+                                {/* Divider */}
+                                {showActiveLecMarks && (
+                                  <td className="px-1 py-3 bg-neutral-100/80" />
+                                )}
 
-                                <td className="p-4 bg-indigo-50/30 font-bold text-indigo-600 text-xs border-r border-neutral-200">
-                                  {student.isAbsent ? "AB" : `${student.finalTheoryFirst || 0}`}
-                                </td>
-
-                                <td className="p-4 bg-emerald-50/30 font-bold text-emerald-700 text-xs">
-                                  <div className="flex items-center justify-center space-x-1.5">
-                                    <span>{student.isAbsent ? "AB" : secondTotal}</span>
-                                    {hasVariance && (
-                                      <span className="inline-block h-2 w-2 rounded-full bg-rose-500 animate-pulse" title="High score variance detected!" />
+                                {/* Second Examiner editable cells */}
+                                {questionsList.map(q => (
+                                  <td key={`exam-${q}`} className="px-1.5 py-2 bg-amber-50/20 text-center">
+                                    {absent ? (
+                                      <span className="text-neutral-400 font-bold text-[11px]">AB</span>
+                                    ) : (
+                                      <input
+                                        type="number" min="0" max={marksPerQ}
+                                        value={examFm[q] ?? ""}
+                                        placeholder="0"
+                                        disabled={activeModule.isFrozen || isFinalized}
+                                        onChange={e => updateSecondMark(s.studentIndex, q, Number(e.target.value))}
+                                        className="w-12 bg-white border border-amber-200 rounded py-1 text-center font-bold focus:outline-none focus:border-amber-500 disabled:opacity-40"
+                                      />
                                     )}
-                                  </div>
+                                  </td>
+                                ))}
+                                <td className="px-4 py-3 text-center font-extrabold text-amber-700 bg-amber-50/20">
+                                  {absent ? "AB" : (hasExamMarks ? examTotal?.toFixed(1) : <span className="text-neutral-300 font-normal text-xs">—</span>)}
                                 </td>
+
+                                {/* Variance */}
+                                {showActiveLecMarks && (
+                                  <td className="px-4 py-3 text-center bg-rose-50/20">
+                                    {absent || variance === null ? (
+                                      <span className="text-neutral-300 text-xs">—</span>
+                                    ) : flagged ? (
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-0.5 rounded-full">
+                                        <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse inline-block" />
+                                        {variance.toFixed(1)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] font-bold text-emerald-600">{variance.toFixed(1)}</span>
+                                    )}
+                                  </td>
+                                )}
                               </tr>
                             );
                           })}
                         </tbody>
                       </table>
                     </div>
-                  </div>
+                  )}
 
-                  <div className="flex justify-end pt-4 border-t border-neutral-100">
-                    <button
-                      onClick={handleSaveSecondMarking}
-                      disabled={isSaving || students.length === 0}
-                      className="h-10 text-xs font-bold px-6 bg-amber-600 text-white hover:bg-amber-700 rounded-xl cursor-pointer disabled:opacity-40 flex items-center transition-colors shadow-sm"
-                    >
-                      {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : <Save className="h-3.5 w-3.5 mr-2" />}
-                      Commit Verified Exam Marks Ledger
-                    </button>
-                  </div>
+                  {students.length > 0 && !activeModule.isFrozen && !isFinalized && (
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-3 border-t border-neutral-100">
+                      <p className="text-[11px] text-neutral-400 max-w-sm">
+                        <strong>Save Progress</strong> to preserve your marks. Click <strong>Finalize Marking</strong> when complete —
+                        this makes your marks visible to the Active Lecturer for comparison.
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleSave(false)}
+                          disabled={isSaving}
+                          className="flex items-center gap-2 h-10 px-4 text-xs font-bold bg-amber-600 text-white rounded-xl hover:bg-amber-700 disabled:opacity-40 transition-all cursor-pointer"
+                        >
+                          {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                          Save Progress
+                        </button>
+                        <button
+                          onClick={() => handleSave(true)}
+                          disabled={isSaving}
+                          className="flex items-center gap-2 h-10 px-4 text-xs font-bold bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-40 transition-all cursor-pointer"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Finalize Marking
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {isFinalized && students.length > 0 && (
+                    <div className="flex items-center gap-2.5 pt-3 border-t border-neutral-100">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                      <p className="text-[11px] text-emerald-700 font-semibold">
+                        Second marking is finalized. The Active Lecturer can now view your marks for variance analysis.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </>
-            ) : (
-              <div className="p-12 text-center text-sm text-neutral-400 italic">
-                Select an engineering or computation moderation track from the roster view to access second marking question schemas.
-              </div>
             )}
           </div>
         </div>

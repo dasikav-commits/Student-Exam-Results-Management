@@ -1,109 +1,136 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { 
-  Users, 
-  BookOpen, 
-  Lock, 
-  Unlock, 
-  CheckCircle, 
-  Loader2, 
-  Layers,
-  TrendingUp,
-  Shield,
-  Edit3,
-  X,
-  Filter,
-  GraduationCap,
-  FileCheck,
-  ChevronDown,
-  UploadCloud,
-  FileText,
-  AlertCircle,
-  Clock,
-  CheckSquare
+import { useRequireAuth } from "@/hooks/useRequireAuth";
+import {
+  Users, BookOpen, Lock, Unlock, Loader2, Layers, TrendingUp, Shield,
+  Edit3, X, GraduationCap, FileCheck, ChevronDown, AlertCircle, CheckCircle,
+  Clock, ClipboardList, Eye, Sliders, Flame, LogOut, RefreshCcw
 } from "lucide-react";
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+type MarksheetStatus = "DRAFT" | "MARKING" | "SECOND_CHECKING" | "FINALIZED";
+
 interface LecturerData {
-  id: string | number;
+  id: number;
   fullName: string;
   email: string;
+  isHod: boolean;
+  isActiveLec: boolean;
+  isExamLec: boolean;
   activeModules: string[];
   examModules: string[];
 }
 
 interface ModuleData {
-  id: string | number;
+  id: number;
   code: string;
   name: string;
   credits: number;
   isFrozen: boolean;
-  assignedActiveLec?: { id: string | number; fullName: string } | null;
-  assignedExamLec?: { id: string | number; fullName: string } | null;
+  assignedActiveLec?: { id: number; fullName: string } | null;
+  assignedExamLec?: { id: number; fullName: string } | null;
   stats: {
-    caCompletionRate: number;
-    moderationStatus: "PENDING" | "MODERATING" | "VERIFIED";
+    caComponents?: any[];
+    finalBlueprint?: { enabled: boolean };
+    caCompletionRate?: number;
+    marksheetStatus?: MarksheetStatus;
   };
 }
 
-type FilterMode = "ALL" | "MODULES" | "LECTURERS" | "FROZEN";
-type SystemRole = "HOD" | "LECTURER" | "EXAMINER";
-type LecturerSubMenu = "OVERVIEW" | "MARK_ENTRY" | "CURVES";
-type ExaminerSubMenu = "PENDING_REVIEWS" | "VERIFIED_REGISTRY";
+// ─── Status Badge ─────────────────────────────────────────────────────────────
+const STATUS_META: Record<MarksheetStatus, { label: string; classes: string; Icon: any }> = {
+  DRAFT: { label: "Draft", classes: "bg-neutral-100 text-neutral-500", Icon: ClipboardList },
+  MARKING: { label: "Marking", classes: "bg-amber-100 text-amber-700", Icon: Clock },
+  SECOND_CHECKING: { label: "2nd Check", classes: "bg-indigo-100 text-indigo-700", Icon: Eye },
+  FINALIZED: { label: "Finalized", classes: "bg-emerald-100 text-emerald-700", Icon: CheckCircle },
+};
 
+function StatusBadge({ status }: { status?: MarksheetStatus }) {
+  const key = status ?? "DRAFT";
+  const meta = STATUS_META[key];
+  return (
+    <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${meta.classes}`}>
+      <meta.Icon className="h-2.5 w-2.5" />
+      {meta.label}
+    </span>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function HodConsolePage() {
-  const { user, isLoading: isAuthLoading } = useAuth();
+  const router = useRouter();
+  const { user } = useRequireAuth();   // ← redirects to /login if no session
+  const { logout } = useAuth();
+
   const [lecturers, setLecturers] = useState<LecturerData[]>([]);
   const [modules, setModules] = useState<ModuleData[]>([]);
   const [isDataLoading, setIsDataLoading] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"modules" | "lecturers" | "results">("modules");
+  const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
 
-  // Active Main Console Role Map
-  const [activeRole, setActiveRole] = useState<SystemRole>("HOD");
-  const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
-
-  // Sub-Menu Navigation states for matching personal page layouts
-  const [lecSubMenu, setLecSubMenu] = useState<LecturerSubMenu>("OVERVIEW");
-  const [exSubMenu, setExSubMenu] = useState<ExaminerSubMenu>("PENDING_REVIEWS");
-
-  // HOD Filter Matrix State
-  const [activeFilter, setActiveFilter] = useState<FilterMode>("ALL");
-
-  // Modal Workspace States
+  // Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedLecturer, setSelectedLecturer] = useState<LecturerData | null>(null);
   const [modalActiveCodes, setModalActiveCodes] = useState<string[]>([]);
   const [modalExamCodes, setModalExamCodes] = useState<string[]>([]);
 
-  const currentUserName = user?.fullName || "Dr. Charith Kapukotuwa";
+  // Results viewer modal
+  const [viewResultsModule, setViewResultsModule] = useState<ModuleData | null>(null);
+  const [moduleStudents, setModuleStudents] = useState<any[]>([]);
+  const [isLoadingResults, setIsLoadingResults] = useState(false);
 
-  async function refreshDashboardData() {
+  const caps = user?.capabilities ?? { isHOD: true, isActiveLec: false, isExamLec: false };
+
+  // ── Data fetch ─────────────────────────────────────────────────────────────
+  async function refreshData() {
+    setIsDataLoading(true);
     try {
       const [lecsRes, modsRes] = await Promise.all([
         fetch("/api/hod/lecturers"),
-        fetch("/api/hod/modules")
+        fetch("/api/hod/modules"),
       ]);
       if (lecsRes.ok && modsRes.ok) {
         setLecturers(await lecsRes.json());
         setModules(await modsRes.json());
       }
-    } catch (error) {
-      console.error("Error linking dashboard resources:", error);
+    } catch (err) {
+      console.error("Failed to load HOD data:", err);
     } finally {
       setIsDataLoading(false);
     }
   }
 
   useEffect(() => {
-    refreshDashboardData();
-    const handleClickOutside = () => setIsRoleDropdownOpen(false);
-    window.addEventListener("click", handleClickOutside);
-    return () => window.removeEventListener("click", handleClickOutside);
+    refreshData();
   }, []);
 
-  // --- HOD Operations ---
-  const openEditModal = (lec: LecturerData) => {
+  // ── Module freeze toggle ────────────────────────────────────────────────────
+  const toggleFreeze = async (code: string) => {
+    setUpdatingId(`freeze-${code}`);
+    const mod = modules.find(m => m.code === code);
+    const nextState = !mod?.isFrozen;
+    try {
+      const res = await fetch("/api/hod/modules", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, isFrozen: nextState }),
+      });
+      if (res.ok) {
+        setModules(prev => prev.map(m => m.code === code ? { ...m, isFrozen: nextState } : m));
+      }
+    } catch (err) {
+      console.error("Freeze toggle failed:", err);
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  // ── Lecturer assignment modal ───────────────────────────────────────────────
+  const openModal = (lec: LecturerData) => {
     setSelectedLecturer(lec);
     setModalActiveCodes([...lec.activeModules]);
     setModalExamCodes([...lec.examModules]);
@@ -114,419 +141,417 @@ export default function HodConsolePage() {
     if (!selectedLecturer) return;
     setUpdatingId("modal-save");
     try {
-      const response = await fetch("/api/hod/lecturers", {
+      const res = await fetch("/api/hod/lecturers", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           lecturerId: selectedLecturer.id,
           activeModuleCodes: modalActiveCodes,
-          examModuleCodes: modalExamCodes
+          examModuleCodes: modalExamCodes,
         }),
       });
-      if (response.ok) {
-        await refreshDashboardData();
+      if (res.ok) {
+        await refreshData();
         setIsModalOpen(false);
         setSelectedLecturer(null);
       }
     } catch (err) {
-      console.error("Error archiving module shifts:", err);
+      console.error("Save assignments failed:", err);
     } finally {
       setUpdatingId(null);
     }
   };
 
-  const toggleModuleFreeze = async (code: string) => {
-    setUpdatingId(`freeze-${code}`);
-    const targetModule = modules.find(m => m.code === code);
-    const nextFreezeState = !targetModule?.isFrozen;
+  const toggleCode = (
+    code: string,
+    list: string[],
+    setList: React.Dispatch<React.SetStateAction<string[]>>
+  ) => {
+    setList(list.includes(code) ? list.filter(c => c !== code) : [...list, code]);
+  };
+
+  // ── Results viewer ─────────────────────────────────────────────────────────
+  const viewResults = async (mod: ModuleData) => {
+    setViewResultsModule(mod);
+    setIsLoadingResults(true);
     try {
-      const response = await fetch("/api/hod/modules", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, isFrozen: nextFreezeState }),
-      });
-      if (response.ok) {
-        setModules(prev => prev.map(mod => mod.code === code ? { ...mod, isFrozen: nextFreezeState } : mod));
-      }
-    } catch (err) {
-      console.error("Database operation failure:", err);
-    } finally {
-      setUpdatingId(null);
-    }
+      const res = await fetch(`/api/lecturer/marks?moduleCode=${encodeURIComponent(mod.code)}`);
+      if (res.ok) setModuleStudents(await res.json());
+    } catch { }
+    setIsLoadingResults(false);
   };
 
-  const handleCheckboxChange = (code: string, list: string[], setList: React.Dispatch<React.SetStateAction<string[]>>) => {
-    if (list.includes(code)) {
-      setList(list.filter(item => item !== code));
-    } else {
-      setList([...list, code]);
-    }
-  };
+  // ── Stats ───────────────────────────────────────────────────────────────────
+  const frozenCount = modules.filter(m => m.isFrozen).length;
+  const finalizedCount = modules.filter(m => m.stats?.marksheetStatus === "FINALIZED").length;
+  const markingCount = modules.filter(m => m.stats?.marksheetStatus === "MARKING" || m.stats?.marksheetStatus === "SECOND_CHECKING").length;
 
-  // --- Workspace Allocation Inferences ---
-  const dynamicLecturerModules = modules.filter(m => m.assignedActiveLec?.fullName === currentUserName);
-  const dynamicExaminerModules = modules.filter(m => m.assignedExamLec?.fullName === currentUserName);
-
-  const filteredHodModules = modules.filter(m => {
-    if (activeFilter === "FROZEN") return m.isFrozen;
-    return true;
-  });
-
-  const getRoleIcon = (role: SystemRole) => {
-    switch (role) {
-      case "HOD": return <Shield className="h-4 w-4 text-indigo-600" />;
-      case "LECTURER": return <GraduationCap className="h-4 w-4 text-emerald-600" />;
-      case "EXAMINER": return <FileCheck className="h-4 w-4 text-amber-600" />;
-    }
-  };
-
-  if (isAuthLoading || isDataLoading) {
+  if (isDataLoading) {
     return (
-      <div className="min-h-screen bg-cream-canvas flex flex-col justify-center items-center">
-        <Loader2 className="h-6 w-6 text-indigo-600 animate-spin" />
-        <p className="mt-4 text-[11px] font-bold text-neutral-400 tracking-widest uppercase">Loading Matrix Engine...</p>
+      <div className="min-h-screen bg-cream-canvas flex flex-col items-center justify-center gap-4">
+        <Loader2 className="h-8 w-8 text-indigo-600 animate-spin" />
+        <p className="text-xs font-bold text-neutral-400 tracking-widest uppercase">Loading HOD Console…</p>
       </div>
     );
   }
 
   return (
     <div className="w-full min-h-screen bg-cream-canvas text-[#1a1a1a]">
-      
-      {/* Top Navigation Frame Container */}
-      <div className="w-full bg-white border-b border-neutral-200/80 sticky top-0 z-40 px-4 sm:px-8 py-4">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-neutral-900 text-white rounded-xl flex items-center justify-center font-bold text-lg tracking-tight">
-              Ω
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="sticky top-0 z-40 bg-white border-b border-neutral-200/80 px-6 py-3">
+        <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-neutral-900 flex items-center justify-center">
+              <Shield className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h2 className="text-sm font-bold tracking-tight">OUM Management</h2>
-              <p className="text-[11px] text-neutral-400 font-medium">Session Identity &bull; {currentUserName}</p>
+              <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Wayamba Exam Portal</p>
+              <h1 className="text-sm font-black text-[#1a1a1a] leading-none">HOD Administration Console</h1>
             </div>
           </div>
 
-          {/* Core Multi-Role Page Switcher Dropdown */}
-          <div className="relative w-full sm:w-64" onClick={(e) => e.stopPropagation()}>
-            <button
-              onClick={() => setIsRoleDropdownOpen(!isRoleDropdownOpen)}
-              className="w-full bg-neutral-50 hover:bg-neutral-100 border border-neutral-200 rounded-xl px-4 py-2.5 flex items-center justify-between text-xs font-bold text-neutral-800 shadow-3xs transition-all cursor-pointer focus:outline-none"
-            >
-              <div className="flex items-center space-x-2">
-                {getRoleIcon(activeRole)}
-                <span>Portal: {activeRole === "HOD" ? "HOD Control Panel" : activeRole === "LECTURER" ? "Lecturer Desk" : "Examiner Board"}</span>
-              </div>
-              <ChevronDown className={`h-4 w-4 text-neutral-400 transition-transform duration-200 ${isRoleDropdownOpen ? "rotate-180" : ""}`} />
-            </button>
+          <div className="flex items-center gap-3">
+            <span className="hidden sm:block text-xs text-neutral-500 font-medium">{user?.fullName ?? user?.email}</span>
 
-            {isRoleDropdownOpen && (
-              <div className="absolute right-0 mt-2 w-full bg-white border border-neutral-200 rounded-xl shadow-lg overflow-hidden z-50 divide-y divide-neutral-100 animate-fadeIn">
-                {(["HOD", "LECTURER", "EXAMINER"] as SystemRole[]).map((role) => (
-                  <button
-                    key={role}
-                    onClick={() => {
-                      setActiveRole(role);
-                      setIsRoleDropdownOpen(false);
-                    }}
-                    className={`w-full px-4 py-3 text-left text-xs font-bold flex items-center space-x-2.5 transition-colors cursor-pointer ${
-                      activeRole === role ? "bg-neutral-50 text-neutral-900" : "text-neutral-600 hover:bg-neutral-50/50"
-                    }`}
-                  >
-                    {getRoleIcon(role)}
-                    <span>{role === "HOD" ? "Head of Department Suite" : role === "LECTURER" ? "My Lecturer Workspace" : "My External Examiner Registry"}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            {/* ── Workspace Switcher ── */}
+            <div className="relative">
+              <button
+                onClick={() => setIsWorkspaceMenuOpen(!isWorkspaceMenuOpen)}
+                className="flex items-center gap-2 px-3 py-2 rounded-xl bg-neutral-900 text-white text-xs font-bold hover:bg-neutral-800 transition-all cursor-pointer"
+              >
+                <Shield className="h-3.5 w-3.5" />
+                <span>HOD Console</span>
+                <ChevronDown className={`h-3 w-3 transition-transform ${isWorkspaceMenuOpen ? "rotate-180" : ""}`} />
+              </button>
+              {isWorkspaceMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setIsWorkspaceMenuOpen(false)} />
+                  <div className="absolute right-0 mt-2 w-64 bg-white border border-neutral-200 rounded-xl shadow-xl p-1.5 z-20 space-y-0.5 text-xs">
+                    <div className="px-3 py-2 border-b border-neutral-100 mb-1">
+                      <span className="font-black text-[#1a1a1a]">{user?.fullName}</span>
+                      <span className="block text-[10px] text-neutral-400">{user?.email}</span>
+                    </div>
+                    {/* Current: HOD Console */}
+                    <button disabled className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-neutral-900 text-white font-bold cursor-default">
+                      <Shield className="h-3.5 w-3.5" /><span>HOD Console (Active)</span>
+                    </button>
+                    {/* Switch to Lecturer Desk */}
+                    {caps.isActiveLec && (
+                      <button
+                        onClick={() => { setIsWorkspaceMenuOpen(false); router.push("/dashboard/lecturer"); }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-neutral-50 text-neutral-700 font-semibold cursor-pointer"
+                      >
+                        <Sliders className="h-3.5 w-3.5 text-indigo-500" />
+                        <div className="text-left">
+                          <span className="block font-bold">Lecturer Desk</span>
+                          <span className="block text-[10px] text-neutral-400">Manage your assigned modules &amp; marks</span>
+                        </div>
+                      </button>
+                    )}
+                    {/* Switch to Examiner Hub */}
+                    {caps.isExamLec && (
+                      <button
+                        onClick={() => { setIsWorkspaceMenuOpen(false); router.push("/dashboard/examiner"); }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-neutral-50 text-neutral-700 font-semibold cursor-pointer"
+                      >
+                        <Flame className="h-3.5 w-3.5 text-amber-500" />
+                        <div className="text-left">
+                          <span className="block font-bold">Examiner Hub</span>
+                          <span className="block text-[10px] text-neutral-400">Second marking &amp; verification</span>
+                        </div>
+                      </button>
+                    )}
+                    {/* Disabled locks when no capability */}
+                    {!caps.isActiveLec && (
+                      <div className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-neutral-50/60 text-neutral-300 cursor-not-allowed">
+                        <Lock className="h-3.5 w-3.5" />
+                        <span className="text-[10px]">Not assigned as Active Lecturer</span>
+                      </div>
+                    )}
+                    {!caps.isExamLec && (
+                      <div className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-neutral-50/60 text-neutral-300 cursor-not-allowed">
+                        <Lock className="h-3.5 w-3.5" />
+                        <span className="text-[10px]">Not assigned as Examiner</span>
+                      </div>
+                    )}
+                    <div className="border-t border-neutral-100 pt-1 mt-1">
+                      <button onClick={logout} className="w-full text-left flex items-center gap-2 px-3 py-2 text-rose-600 font-semibold rounded-lg hover:bg-rose-50 cursor-pointer">
+                        <LogOut className="h-3.5 w-3.5" />Sign Out
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Main Console Workspace Container */}
-      <div className="max-w-7xl mx-auto p-4 sm:p-8 space-y-8">
+      {/* ── Main Content ────────────────────────────────────────────────────── */}
+      <div className="max-w-screen-2xl mx-auto p-4 sm:p-6 space-y-5">
 
-        {/* ==================== WORKFLOW CONTEXT 1: MASTER HOD CONSOLE ==================== */}
-        {activeRole === "HOD" && (
-          <div className="space-y-8 animate-fadeIn">
-            <div className="space-y-1">
-              <h1 className="text-2xl font-bold tracking-tight">Department Administration Matrix</h1>
-              <p className="text-xs text-neutral-500 font-medium">Overarching allocation architectures and freeze controls.</p>
-            </div>
-
-            {/* HOD Metric Matrix Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              {[
-                { id: "MODULES" as FilterMode, title: "Monitored Modules", val: modules.length, icon: <BookOpen className="h-4 w-4" /> },
-                { id: "LECTURERS" as FilterMode, title: "Faculty Lecturers", val: lecturers.length, icon: <Users className="h-4 w-4" /> },
-                { id: "FROZEN" as FilterMode, title: "Frozen Blueprints", val: modules.filter(m => m.isFrozen).length, icon: <Lock className="h-4 w-4" /> },
-                { id: "ALL" as FilterMode, title: "Avg Target Health", val: "94.2%", icon: <TrendingUp className="h-4 w-4" />, static: true }
-              ].map((card) => (
-                <div 
-                  key={card.title}
-                  onClick={() => !card.static && setActiveFilter(prev => prev === card.id ? "ALL" : card.id)}
-                  className={`bg-white p-5 rounded-xl premium-border flex flex-col justify-between aspect-square cursor-pointer transition-all ${
-                    activeFilter === card.id ? "ring-2 ring-indigo-500 bg-indigo-50/10" : ""
-                  }`}
-                >
-                  <div className="flex justify-between items-start">
-                    <span className="text-[10px] font-bold tracking-wider text-neutral-400 uppercase">{card.title}</span>
-                    <div className="p-2 bg-neutral-100 rounded-lg text-neutral-700">{card.icon}</div>
-                  </div>
-                  <h3 className="text-4xl font-bold tracking-tight">{card.val}</h3>
-                </div>
-              ))}
-            </div>
-
-            {/* Twin Tables Group */}
-            <div className="grid grid-cols-1 xl:grid-cols-5 gap-6 items-start">
-              <div className={`xl:col-span-3 bg-white rounded-xl premium-border overflow-hidden ${activeFilter === "LECTURERS" ? "opacity-30 pointer-events-none" : ""}`}>
-                <div className="p-4 bg-neutral-50 border-b border-neutral-200/60 font-bold text-xs uppercase tracking-wider text-neutral-500">Module Blueprint Manifest</div>
-                <table className="w-full text-left text-xs font-medium">
-                  <tbody>
-                    {filteredHodModules.map(mod => (
-                      <tr key={mod.id} className="border-b border-neutral-100 hover:bg-neutral-50/50">
-                        <td className="p-4"><strong className="text-sm font-bold block">{mod.code}</strong><span className="text-neutral-400">{mod.name}</span></td>
-                        <td className="p-4 text-neutral-500">Lec: <span className="text-neutral-800 font-semibold">{mod.assignedActiveLec?.fullName || "None"}</span><br/>Exam: <span className="text-neutral-800 font-semibold">{mod.assignedExamLec?.fullName || "None"}</span></td>
-                        <td className="p-4 text-right">
-                          <button onClick={() => toggleModuleFreeze(mod.code)} className="px-3 py-1 bg-white border border-neutral-300 rounded-full font-bold">
-                            {mod.isFrozen ? "Unfreeze" : "Freeze"}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className={`xl:col-span-2 bg-white rounded-xl premium-border overflow-hidden ${activeFilter === "FROZEN" ? "opacity-30 pointer-events-none" : ""}`}>
-                <div className="p-4 bg-neutral-50 border-b border-neutral-200/60 font-bold text-xs uppercase tracking-wider text-neutral-500">Academic Faculty Roster</div>
-                <table className="w-full text-left text-xs font-medium">
-                  <tbody>
-                    {lecturers.map(lec => (
-                      <tr key={lec.id} className="border-b border-neutral-100 hover:bg-neutral-50/50">
-                        <td className="p-4"><strong>{lec.fullName}</strong><p className="text-neutral-400">{lec.email}</p></td>
-                        <td className="p-4 text-right">
-                          <button onClick={() => openEditModal(lec)} className="px-3 py-1 bg-white border border-neutral-300 rounded-full font-bold">Manage</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+        {/* Stats cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          {[
+            { label: "Total Modules", value: modules.length, icon: <BookOpen className="h-5 w-5" />, color: "text-indigo-600 bg-indigo-50" },
+            { label: "Frozen", value: frozenCount, icon: <Lock className="h-5 w-5" />, color: "text-rose-600 bg-rose-50" },
+            { label: "In Progress", value: markingCount, icon: <Clock className="h-5 w-5" />, color: "text-amber-600 bg-amber-50" },
+            { label: "Finalized", value: finalizedCount, icon: <CheckCircle className="h-5 w-5" />, color: "text-emerald-600 bg-emerald-50" },
+          ].map(card => (
+            <div key={card.label} className="bg-white rounded-xl premium-border p-4 flex items-center gap-3">
+              <div className={`p-2.5 rounded-xl ${card.color}`}>{card.icon}</div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">{card.label}</p>
+                <p className="text-2xl font-black text-[#1a1a1a]">{card.value}</p>
               </div>
             </div>
-          </div>
-        )}
+          ))}
+        </div>
 
+        {/* Main tabs */}
+        <div className="flex gap-2">
+          {([
+            { id: "modules" as const, label: "Module Blueprint Control", icon: <Layers className="h-3.5 w-3.5" /> },
+            { id: "lecturers" as const, label: "Lecturer Roster & Assignments", icon: <Users className="h-3.5 w-3.5" /> },
+            { id: "results" as const, label: "Result Sheets", icon: <FileCheck className="h-3.5 w-3.5" /> },
+          ]).map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${activeTab === tab.id ? "bg-[#1a1a1a] text-white border-[#1a1a1a]" : "bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50"}`}
+            >
+              {tab.icon}{tab.label}
+            </button>
+          ))}
+          <button onClick={refreshData} className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-white border border-neutral-200 text-neutral-500 hover:bg-neutral-50 cursor-pointer">
+            <RefreshCcw className="h-3.5 w-3.5" />Refresh
+          </button>
+        </div>
 
-        {/* ==================== WORKFLOW CONTEXT 2: LECTURER PAGE IMPLEMENTATION ==================== */}
-        {activeRole === "LECTURER" && (
-          <div className="space-y-6 animate-fadeIn">
-            
-            {/* MATCHING LECTURER SUB-MENU BAR */}
-            <div className="w-full bg-white border border-neutral-200 rounded-xl p-1.5 flex items-center space-x-2">
-              {[
-                { id: "OVERVIEW" as LecturerSubMenu, label: "Course Workload Matrix", icon: <Layers className="h-3.5 w-3.5" /> },
-                { id: "MARK_ENTRY" as LecturerSubMenu, label: "Continuous Assessment Entry", icon: <UploadCloud className="h-3.5 w-3.5" /> },
-                { id: "CURVES" as LecturerSubMenu, label: "Grading Analytics & Curves", icon: <TrendingUp className="h-3.5 w-3.5" /> }
-              ].map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setLecSubMenu(tab.id)}
-                  className={`flex items-center space-x-2 px-4 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all ${
-                    lecSubMenu === tab.id 
-                      ? "bg-emerald-600 text-white shadow-sm" 
-                      : "text-neutral-600 hover:bg-neutral-50"
-                  }`}
-                >
-                  {tab.icon}
-                  <span>{tab.label}</span>
-                </button>
-              ))}
+        {/* ══════════════════════════════════════════════════════════════════════
+            TAB 1 — MODULE BLUEPRINT CONTROL
+        ══════════════════════════════════════════════════════════════════════ */}
+        {activeTab === "modules" && (
+          <div className="bg-white rounded-2xl premium-border overflow-hidden">
+            <div className="p-4 border-b border-neutral-200 bg-neutral-50/60 text-xs font-bold uppercase tracking-wider text-neutral-500">
+              Department Module Manifest ({modules.length} modules)
             </div>
-
-            {/* Submenu Desk View Component Switcher */}
-            {lecSubMenu === "OVERVIEW" && (
-              <div className="bg-white rounded-xl premium-border overflow-hidden">
-                <div className="p-4 bg-emerald-50/40 border-b border-neutral-200/60 font-bold text-xs uppercase tracking-wider text-emerald-800">
-                  Allocated Academic Teaching Rows ({dynamicLecturerModules.length})
-                </div>
-                <div className="p-6 divide-y divide-neutral-100">
-                  {dynamicLecturerModules.length === 0 ? (
-                    <p className="text-xs text-neutral-400 italic py-4">You are not cataloged as an active class lecturer for any modules this semester.</p>
-                  ) : dynamicLecturerModules.map(mod => (
-                    <div key={mod.id} className="py-4 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
-                      <div>
-                        <span className="text-sm font-bold text-neutral-900 block">{mod.code} &bull; {mod.name}</span>
-                        <span className="text-xs text-neutral-400 font-medium">Assigned External Script Reviewer: {mod.assignedExamLec?.fullName || "Unallocated"}</span>
-                      </div>
-                      <div className="flex items-center space-x-6">
-                        <div className="text-left sm:text-right">
-                          <p className="text-[10px] uppercase font-bold text-neutral-400 tracking-tight">CA Status</p>
-                          <p className="text-xs font-bold text-neutral-800">{mod.stats.caCompletionRate}% Complete</p>
-                        </div>
-                        {mod.isFrozen ? (
-                          <span className="text-xs text-neutral-400 font-semibold bg-neutral-100 px-3 py-1 rounded-full flex items-center">
-                            <Lock className="h-3 w-3 mr-1" /> Schema Frozen
-                          </span>
+            <div className="overflow-auto">
+              <table className="w-full text-xs text-left border-collapse">
+                <thead>
+                  <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200">
+                    <th className="px-5 py-3">Module</th>
+                    <th className="px-5 py-3">Active Lecturer</th>
+                    <th className="px-5 py-3">Examiner</th>
+                    <th className="px-5 py-3 text-center">CA Components</th>
+                    <th className="px-5 py-3 text-center">Exam</th>
+                    <th className="px-5 py-3 text-center">Status</th>
+                    <th className="px-5 py-3 text-center">Freeze</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {modules.map(mod => (
+                    <tr key={mod.id} className="hover:bg-neutral-50/40 transition-colors">
+                      <td className="px-5 py-4">
+                        <p className="font-bold text-sm">{mod.code}</p>
+                        <p className="text-neutral-400 mt-0.5 text-[11px]">{mod.name}</p>
+                        <p className="text-[10px] text-neutral-300 mt-0.5">{mod.credits} credits</p>
+                      </td>
+                      <td className="px-5 py-4 font-semibold">
+                        {mod.assignedActiveLec?.fullName ?? <span className="text-neutral-300 italic text-[11px]">Unassigned</span>}
+                      </td>
+                      <td className="px-5 py-4 font-semibold">
+                        {mod.assignedExamLec?.fullName ?? <span className="text-neutral-300 italic text-[11px]">Unassigned</span>}
+                      </td>
+                      <td className="px-5 py-4 text-center">
+                        <span className="font-bold">{(mod.stats?.caComponents ?? []).length}</span>
+                      </td>
+                      <td className="px-5 py-4 text-center">
+                        {mod.stats?.finalBlueprint?.enabled ? (
+                          <span className="text-emerald-600 font-bold text-[11px]">✓ Yes</span>
                         ) : (
-                          <button onClick={() => setLecSubMenu("MARK_ENTRY")} className="px-3 py-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 rounded-md text-xs font-bold">
-                            Manage Submissions
-                          </button>
+                          <span className="text-neutral-300 text-[11px]">No</span>
                         )}
-                      </div>
-                    </div>
+                      </td>
+                      <td className="px-5 py-4 text-center">
+                        <StatusBadge status={mod.stats?.marksheetStatus} />
+                      </td>
+                      <td className="px-5 py-4 text-center">
+                        <button
+                          onClick={() => toggleFreeze(mod.code)}
+                          disabled={updatingId === `freeze-${mod.code}`}
+                          className={`flex items-center gap-1.5 mx-auto h-7 px-3 rounded-lg text-[10px] font-bold border transition-all cursor-pointer disabled:opacity-40 ${mod.isFrozen ? "bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100" : "bg-neutral-50 border-neutral-200 text-neutral-600 hover:bg-neutral-100"}`}
+                        >
+                          {updatingId === `freeze-${mod.code}` ? <Loader2 className="h-3 w-3 animate-spin" /> : mod.isFrozen ? <><Lock className="h-3 w-3" />Frozen</> : <><Unlock className="h-3 w-3" />Freeze</>}
+                        </button>
+                      </td>
+                    </tr>
                   ))}
-                </div>
-              </div>
-            )}
-
-            {lecSubMenu === "MARK_ENTRY" && (
-              <div className="bg-white rounded-xl premium-border p-6 space-y-4">
-                <div className="flex items-center space-x-2 text-amber-600">
-                  <AlertCircle className="h-4 w-4" />
-                  <h3 className="font-bold text-sm">Active Marksheet Workspace</h3>
-                </div>
-                <p className="text-xs text-neutral-500 max-w-xl">
-                  Select an active class module below to append, import, or re-verify grading marks before sending sheets to internal examiners for board signature.
-                </p>
-                <div className="border border-neutral-200 rounded-xl divide-y divide-neutral-100">
-                  {dynamicLecturerModules.map(m => (
-                    <div key={m.code} className="p-4 flex justify-between items-center bg-neutral-50/30">
-                      <div>
-                        <span className="font-bold text-xs">{m.code} Marksheet Blueprint</span>
-                        <p className="text-[11px] text-neutral-400">Continuous Assessment Suite &bull; Weight 40%</p>
-                      </div>
-                      <button disabled={m.isFrozen} className="bg-white hover:bg-neutral-50 text-xs border border-neutral-300 px-3 py-1.5 rounded-lg font-bold disabled:opacity-40">
-                        {m.isFrozen ? "Locked by HOD" : "Open CSV Buffer"}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {lecSubMenu === "CURVES" && (
-              <div className="bg-white rounded-xl premium-border p-8 text-center space-y-3">
-                <div className="w-12 h-12 bg-neutral-100 rounded-full flex items-center justify-center text-neutral-400 mx-auto">
-                  <TrendingUp className="h-5 w-5" />
-                </div>
-                <h4 className="font-bold text-sm">Grading Distribution Gaussian Engine</h4>
-                <p className="text-xs text-neutral-400 max-w-sm mx-auto">
-                  Data clustering analysis and standard deviation bell curves compile dynamically once continuous assignment logs cross a 100% threshold.
-                </p>
-              </div>
-            )}
+                  {modules.length === 0 && (
+                    <tr><td colSpan={7} className="px-5 py-10 text-center text-neutral-400 italic">No modules found.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
+        {/* ══════════════════════════════════════════════════════════════════════
+            TAB 2 — LECTURER ROSTER & ASSIGNMENTS
+        ══════════════════════════════════════════════════════════════════════ */}
+        {activeTab === "lecturers" && (
+          <div className="bg-white rounded-2xl premium-border overflow-hidden">
+            <div className="p-4 border-b border-neutral-200 bg-neutral-50/60 text-xs font-bold uppercase tracking-wider text-neutral-500">
+              Faculty Lecturer Roster ({lecturers.length} lecturers)
+            </div>
+            <table className="w-full text-xs text-left border-collapse">
+              <thead>
+                <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200">
+                  <th className="px-5 py-3">Name / Email</th>
+                  <th className="px-5 py-3">Roles</th>
+                  <th className="px-5 py-3">Active Modules</th>
+                  <th className="px-5 py-3">Exam Modules</th>
+                  <th className="px-5 py-3 text-center">Manage</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-100">
+                {lecturers.map(lec => (
+                  <tr key={lec.id} className="hover:bg-neutral-50/40">
+                    <td className="px-5 py-4">
+                      <p className="font-bold">{lec.fullName}</p>
+                      <p className="text-neutral-400 text-[11px]">{lec.email}</p>
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex flex-wrap gap-1">
+                        {lec.isHod && <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-neutral-900 text-white uppercase">HOD</span>}
+                        {lec.isActiveLec && <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 uppercase">Lec</span>}
+                        {lec.isExamLec && <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 uppercase">Exam</span>}
+                        {!lec.isHod && !lec.isActiveLec && !lec.isExamLec && <span className="text-neutral-300 text-[11px] italic">None</span>}
+                      </div>
+                    </td>
+                    <td className="px-5 py-4">
+                      {lec.activeModules.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {lec.activeModules.map(c => (
+                            <span key={c} className="bg-indigo-50 text-indigo-700 font-bold text-[10px] px-1.5 py-0.5 rounded">{c}</span>
+                          ))}
+                        </div>
+                      ) : <span className="text-neutral-300 italic text-[11px]">None</span>}
+                    </td>
+                    <td className="px-5 py-4">
+                      {lec.examModules.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {lec.examModules.map(c => (
+                            <span key={c} className="bg-amber-50 text-amber-700 font-bold text-[10px] px-1.5 py-0.5 rounded">{c}</span>
+                          ))}
+                        </div>
+                      ) : <span className="text-neutral-300 italic text-[11px]">None</span>}
+                    </td>
+                    <td className="px-5 py-4 text-center">
+                      <button
+                        onClick={() => openModal(lec)}
+                        className="flex items-center gap-1.5 mx-auto h-7 px-3 rounded-lg text-[10px] font-bold bg-neutral-50 border border-neutral-200 text-neutral-700 hover:bg-neutral-100 cursor-pointer"
+                      >
+                        <Edit3 className="h-3 w-3" />Manage
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {lecturers.length === 0 && (
+                  <tr><td colSpan={5} className="px-5 py-10 text-center text-neutral-400 italic">No lecturers found.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
 
-        {/* ==================== WORKFLOW CONTEXT 3: EXAMINER PAGE IMPLEMENTATION ==================== */}
-        {activeRole === "EXAMINER" && (
-          <div className="space-y-6 animate-fadeIn">
-            
-            {/* MATCHING EXAMINER SUB-MENU BAR */}
-            <div className="w-full bg-white border border-neutral-200 rounded-xl p-1.5 flex items-center space-x-2">
-              {[
-                { id: "PENDING_REVIEWS" as ExaminerSubMenu, label: "Awaiting Assessment Verification", icon: <Clock className="h-3.5 w-3.5" /> },
-                { id: "VERIFIED_REGISTRY" as ExaminerSubMenu, label: "Signed Mod Registry History", icon: <CheckSquare className="h-3.5 w-3.5" /> }
-              ].map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setExSubMenu(tab.id)}
-                  className={`flex items-center space-x-2 px-4 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all ${
-                    exSubMenu === tab.id 
-                      ? "bg-amber-600 text-white shadow-sm" 
-                      : "text-neutral-600 hover:bg-neutral-50"
-                  }`}
-                >
-                  {tab.icon}
-                  <span>{tab.label}</span>
-                </button>
+        {/* ══════════════════════════════════════════════════════════════════════
+            TAB 3 — RESULT SHEETS
+        ══════════════════════════════════════════════════════════════════════ */}
+        {activeTab === "results" && (
+          <div className="space-y-4">
+            {/* Status legend */}
+            <div className="bg-white rounded-xl premium-border p-4 flex flex-wrap gap-4 text-xs">
+              <span className="font-bold text-neutral-500">Marksheet Status Legend:</span>
+              {(Object.entries(STATUS_META) as [MarksheetStatus, typeof STATUS_META[MarksheetStatus]][]).map(([key, meta]) => (
+                <span key={key} className={`flex items-center gap-1.5 font-bold px-2 py-0.5 rounded-full ${meta.classes}`}>
+                  <meta.Icon className="h-3 w-3" />{meta.label}
+                </span>
               ))}
             </div>
 
-            {/* Submenu Board View Component Switcher */}
-            {exSubMenu === "PENDING_REVIEWS" && (
-              <div className="bg-white rounded-xl premium-border overflow-hidden">
-                <div className="p-4 bg-amber-50/40 border-b border-neutral-200/60 font-bold text-xs uppercase tracking-wider text-amber-800">
-                  Assigned Script Framework Packages ({dynamicExaminerModules.filter(m => m.stats.moderationStatus !== "VERIFIED").length})
-                </div>
-                <div className="p-4 divide-y divide-neutral-100">
-                  {dynamicExaminerModules.length === 0 ? (
-                    <p className="text-xs text-neutral-400 italic py-4 p-2">You are not listed as an active moderation internal examiner for this semester.</p>
-                  ) : dynamicExaminerModules.map(mod => (
-                    <div key={mod.id} className="py-4 flex justify-between items-center">
-                      <div>
-                        <div className="flex items-center space-x-2">
-                          <span className="text-sm font-bold text-neutral-900">{mod.code}</span>
-                          <span className="text-[10px] px-2 py-0.5 bg-neutral-100 text-neutral-500 rounded font-bold uppercase">{mod.stats.moderationStatus}</span>
-                        </div>
-                        <span className="text-xs text-neutral-400 block mt-0.5">Assigned Class Instructor: {mod.assignedActiveLec?.fullName || "None"}</span>
-                      </div>
-                      <button className="h-8 bg-[#1a1a1a] hover:bg-neutral-800 text-white font-bold px-3.5 rounded-lg text-xs transition-colors">
-                        Review Marks File
-                      </button>
-                    </div>
+            <div className="bg-white rounded-2xl premium-border overflow-hidden">
+              <div className="p-4 border-b border-neutral-200 bg-neutral-50/60 text-xs font-bold uppercase tracking-wider text-neutral-500">
+                All Module Result Status
+              </div>
+              <table className="w-full text-xs text-left border-collapse">
+                <thead>
+                  <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200">
+                    <th className="px-5 py-3">Module</th>
+                    <th className="px-5 py-3">Active Lecturer</th>
+                    <th className="px-5 py-3">Examiner</th>
+                    <th className="px-5 py-3 text-center">Status</th>
+                    <th className="px-5 py-3 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {modules.map(mod => (
+                    <tr key={mod.id} className="hover:bg-neutral-50/40">
+                      <td className="px-5 py-4">
+                        <p className="font-bold">{mod.code}</p>
+                        <p className="text-neutral-400 text-[11px]">{mod.name}</p>
+                      </td>
+                      <td className="px-5 py-4 font-semibold">{mod.assignedActiveLec?.fullName ?? "—"}</td>
+                      <td className="px-5 py-4 font-semibold">{mod.assignedExamLec?.fullName ?? "—"}</td>
+                      <td className="px-5 py-4 text-center">
+                        <StatusBadge status={mod.stats?.marksheetStatus} />
+                      </td>
+                      <td className="px-5 py-4 text-center">
+                        <button
+                          onClick={() => viewResults(mod)}
+                          className={`flex items-center gap-1.5 mx-auto h-7 px-3 rounded-lg text-[10px] font-bold border cursor-pointer transition-all ${mod.stats?.marksheetStatus === "FINALIZED" ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100" : "bg-neutral-50 border-neutral-200 text-neutral-500 hover:bg-neutral-100"}`}
+                        >
+                          <Eye className="h-3 w-3" />
+                          {mod.stats?.marksheetStatus === "FINALIZED" ? "View Final Results" : "Preview"}
+                        </button>
+                      </td>
+                    </tr>
                   ))}
-                </div>
-              </div>
-            )}
-
-            {exSubMenu === "VERIFIED_REGISTRY" && (
-              <div className="bg-white rounded-xl premium-border p-6 space-y-2">
-                <div className="flex items-center space-x-2 text-neutral-400">
-                  <FileText className="h-4 w-4" />
-                  <h4 className="font-bold text-xs uppercase tracking-wider">Archived Signed Logs</h4>
-                </div>
-                <div className="divide-y divide-neutral-100 pt-2">
-                  {dynamicExaminerModules.filter(m => m.stats.moderationStatus === "VERIFIED").length === 0 ? (
-                    <p className="text-xs text-neutral-400 italic py-2">No verification matrices have been formally committed to disk for archive during this session cycle.</p>
-                  ) : (
-                    dynamicExaminerModules.filter(m => m.stats.moderationStatus === "VERIFIED").map(m => (
-                      <div key={m.code} className="py-3 flex justify-between text-xs">
-                        <span className="font-semibold">{m.code} Examination Portfolio</span>
-                        <span className="text-emerald-600 font-bold">✓ Vaulted Ledger Record</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
-
       </div>
 
-      {/* Assignment Modal Workspace Frame (Only accessible inside HOD role workflow) */}
-      {isModalOpen && selectedLecturer && activeRole === "HOD" && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-3xs flex items-center justify-center p-4 z-50 animate-fadeIn">
-          <div className="bg-white w-full max-w-xl rounded-2xl shadow-xl overflow-hidden border border-neutral-200">
-            <div className="p-6 border-b border-neutral-100 bg-neutral-50/50 flex justify-between items-center">
+      {/* ── Assignment Modal ──────────────────────────────────────────────────── */}
+      {isModalOpen && selectedLecturer && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-5 border-b border-neutral-100 bg-neutral-50 flex justify-between items-center">
               <div>
-                <h3 className="font-bold text-lg text-neutral-900">Manage Lecturer Workload</h3>
-                <p className="text-xs text-neutral-400 font-medium mt-0.5">Configuring assignments for {selectedLecturer.fullName}</p>
+                <h3 className="font-bold text-sm">Manage Module Assignments</h3>
+                <p className="text-xs text-neutral-400 mt-0.5">Configuring workload for <strong>{selectedLecturer.fullName}</strong></p>
               </div>
-              <button onClick={() => setIsModalOpen(false)} className="w-8 h-8 rounded-full border border-neutral-200 flex items-center justify-center hover:bg-neutral-100 text-neutral-500 cursor-pointer">
-                <X className="h-4 w-4" />
+              <button onClick={() => setIsModalOpen(false)} className="w-8 h-8 rounded-full border border-neutral-200 flex items-center justify-center hover:bg-neutral-100 cursor-pointer">
+                <X className="h-4 w-4 text-neutral-500" />
               </button>
             </div>
 
-            <div className="p-6 max-h-[60vh] overflow-y-auto space-y-6">
+            <div className="p-5 overflow-y-auto space-y-6 flex-1">
               <div>
-                <h4 className="text-xs font-bold uppercase text-neutral-400 tracking-wider mb-3">Assign as Active Lecturer for:</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {modules.map((mod) => (
-                    <label key={`active-${mod.code}`} className={`flex items-start p-3 border rounded-xl cursor-pointer select-none transition-all ${modalActiveCodes.includes(mod.code) ? "border-indigo-500 bg-indigo-50/30 font-semibold" : "border-neutral-200 hover:bg-neutral-50"}`}>
-                      <input 
-                        type="checkbox" 
-                        disabled={mod.isFrozen}
-                        checked={modalActiveCodes.includes(mod.code)} 
-                        onChange={() => handleCheckboxChange(mod.code, modalActiveCodes, setModalActiveCodes)}
-                        className="mt-0.5 h-4 w-4 accent-indigo-600 rounded text-white" 
-                      />
-                      <div className="ml-2.5 text-xs">
-                        <p className="text-neutral-900 font-bold">{mod.code}</p>
-                        <p className="text-neutral-400 font-normal text-[11px] truncate max-w-[180px]">{mod.name}</p>
+                <h4 className="text-xs font-bold uppercase text-neutral-400 tracking-wider mb-3 flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-indigo-500 inline-block" />
+                  Assign as Active Lecturer for:
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {modules.map(mod => (
+                    <label key={`a-${mod.code}`} className={`flex items-start gap-2.5 p-3 border rounded-xl cursor-pointer transition-all ${modalActiveCodes.includes(mod.code) ? "border-indigo-500 bg-indigo-50/40" : "border-neutral-200 hover:bg-neutral-50"}`}>
+                      <input type="checkbox" disabled={mod.isFrozen} checked={modalActiveCodes.includes(mod.code)} onChange={() => toggleCode(mod.code, modalActiveCodes, setModalActiveCodes)} className="mt-0.5 accent-indigo-600" />
+                      <div className="text-xs">
+                        <p className="font-bold">{mod.code}</p>
+                        <p className="text-neutral-400 text-[11px]">{mod.name}</p>
                       </div>
                     </label>
                   ))}
@@ -534,20 +559,17 @@ export default function HodConsolePage() {
               </div>
 
               <div>
-                <h4 className="text-xs font-bold uppercase text-neutral-400 tracking-wider mb-3">Assign as Examiner / Script Marker for:</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {modules.map((mod) => (
-                    <label key={`exam-${mod.code}`} className={`flex items-start p-3 border rounded-xl cursor-pointer select-none transition-all ${modalExamCodes.includes(mod.code) ? "border-emerald-500 bg-emerald-50/20 font-semibold" : "border-neutral-200 hover:bg-neutral-50"}`}>
-                      <input 
-                        type="checkbox" 
-                        disabled={mod.isFrozen}
-                        checked={modalExamCodes.includes(mod.code)} 
-                        onChange={() => handleCheckboxChange(mod.code, modalExamCodes, setModalExamCodes)}
-                        className="mt-0.5 h-4 w-4 accent-emerald-600 rounded text-white" 
-                      />
-                      <div className="ml-2.5 text-xs">
-                        <p className="text-neutral-900 font-bold">{mod.code}</p>
-                        <p className="text-neutral-400 font-normal text-[11px] truncate max-w-[180px]">{mod.name}</p>
+                <h4 className="text-xs font-bold uppercase text-neutral-400 tracking-wider mb-3 flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-amber-500 inline-block" />
+                  Assign as Examiner for:
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {modules.map(mod => (
+                    <label key={`e-${mod.code}`} className={`flex items-start gap-2.5 p-3 border rounded-xl cursor-pointer transition-all ${modalExamCodes.includes(mod.code) ? "border-amber-500 bg-amber-50/40" : "border-neutral-200 hover:bg-neutral-50"}`}>
+                      <input type="checkbox" disabled={mod.isFrozen} checked={modalExamCodes.includes(mod.code)} onChange={() => toggleCode(mod.code, modalExamCodes, setModalExamCodes)} className="mt-0.5 accent-amber-600" />
+                      <div className="text-xs">
+                        <p className="font-bold">{mod.code}</p>
+                        <p className="text-neutral-400 text-[11px]">{mod.name}</p>
                       </div>
                     </label>
                   ))}
@@ -555,23 +577,74 @@ export default function HodConsolePage() {
               </div>
             </div>
 
-            <div className="p-6 bg-neutral-50/50 border-t border-neutral-100 flex justify-end space-x-3">
-              <button onClick={() => setIsModalOpen(false)} className="h-10 text-xs font-bold px-4 rounded-xl border border-neutral-300 text-neutral-700 bg-white hover:bg-neutral-50 transition-colors cursor-pointer">
-                Cancel
-              </button>
-              <button 
+            <div className="p-5 border-t border-neutral-100 bg-neutral-50 flex justify-end gap-3">
+              <button onClick={() => setIsModalOpen(false)} className="h-9 px-4 text-xs font-bold rounded-xl border border-neutral-300 text-neutral-700 bg-white hover:bg-neutral-50 cursor-pointer">Cancel</button>
+              <button
                 onClick={handleSaveAssignments}
                 disabled={updatingId === "modal-save"}
-                className="h-10 text-xs font-bold px-5 rounded-xl bg-[#1a1a1a] text-white hover:bg-neutral-800 transition-colors cursor-pointer flex items-center"
+                className="h-9 px-5 text-xs font-bold rounded-xl bg-[#1a1a1a] text-white hover:bg-neutral-800 disabled:opacity-40 cursor-pointer flex items-center gap-2"
               >
-                {updatingId === "modal-save" ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
-                Save Assignment Matrix
+                {updatingId === "modal-save" && <Loader2 className="h-3 w-3 animate-spin" />}
+                Save Assignment
               </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* ── Results Viewer Modal ──────────────────────────────────────────────── */}
+      {viewResultsModule && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-5 border-b border-neutral-100 bg-neutral-50 flex justify-between items-center">
+              <div>
+                <h3 className="font-bold text-sm">{viewResultsModule.code} — Student Mark Records</h3>
+                <p className="text-xs text-neutral-400 mt-0.5">{viewResultsModule.name} · <StatusBadge status={viewResultsModule.stats?.marksheetStatus} /></p>
+              </div>
+              <button onClick={() => { setViewResultsModule(null); setModuleStudents([]); }} className="w-8 h-8 rounded-full border border-neutral-200 flex items-center justify-center hover:bg-neutral-100 cursor-pointer">
+                <X className="h-4 w-4 text-neutral-500" />
+              </button>
+            </div>
+            <div className="p-5 overflow-auto flex-1">
+              {isLoadingResults ? (
+                <div className="flex justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-indigo-600" /></div>
+              ) : moduleStudents.length === 0 ? (
+                <p className="text-center text-neutral-400 italic py-8 text-sm">No student marks recorded yet.</p>
+              ) : (
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-neutral-50 text-[10px] font-bold uppercase tracking-wider text-neutral-400 border-b border-neutral-200">
+                      <th className="px-4 py-3">#</th>
+                      <th className="px-4 py-3">Student Index</th>
+                      <th className="px-4 py-3 text-center">CA Absent</th>
+                      <th className="px-4 py-3 text-center">Final Absent</th>
+                      <th className="px-4 py-3 text-center">CA Components</th>
+                      <th className="px-4 py-3 text-center">Final Marks</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {moduleStudents.map((s: any, idx: number) => {
+                      const caAbsent = Object.values(s.isAbsentCa ?? {}).some(v => v === true);
+                      const caCount = Object.values(s.caQuestionsMarks ?? {}).length;
+                      const finalCount = Object.values(s.finalExamQuestionsMarks ?? {}).length;
+                      return (
+                        <tr key={s.studentIndex} className="hover:bg-neutral-50/40">
+                          <td className="px-4 py-3 text-neutral-400 font-bold">{idx + 1}</td>
+                          <td className="px-4 py-3 font-bold uppercase tracking-wider">{s.studentIndex}</td>
+                          <td className="px-4 py-3 text-center">{caAbsent ? <span className="text-rose-600 font-bold">AB</span> : <span className="text-emerald-600">✓</span>}</td>
+                          <td className="px-4 py-3 text-center">{s.isAbsentFinal ? <span className="text-rose-600 font-bold">AB</span> : <span className="text-emerald-600">✓</span>}</td>
+                          <td className="px-4 py-3 text-center">{caCount} CA component(s) entered</td>
+                          <td className="px-4 py-3 text-center">{finalCount} question(s) entered</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

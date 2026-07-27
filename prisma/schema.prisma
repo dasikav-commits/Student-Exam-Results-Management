@@ -1,0 +1,66 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 1. Users Table
+model SystemUser {
+  id            Int      @id @default(autoincrement())
+  email         String   @unique
+  role          String   @default("LECTURER") // 'LECTURER' | 'ADMIN'
+  // Extended auth fields (not in core spec but required for login/admin)
+  fullName      String?  @map("full_name")
+  passwordHash  String?  @map("password_hash")
+  isHod         Boolean  @default(false) @map("is_hod")
+  isActiveLec   Boolean  @default(false) @map("is_active_lec")
+  isExamLec     Boolean  @default(false) @map("is_exam_lec")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  activeModules Module[] @relation("ActiveLecturer")
+  examModules   Module[] @relation("ExamLecturer")
+
+  @@map("system_users")
+}
+
+// 2. Course Modules Table (Leverages native Prisma Json type matching JSONB)
+model Module {
+  id               Int          @id @default(autoincrement())
+  code             String       @unique
+  name             String
+  credits          Int          @default(3)
+  isFrozen         Boolean      @default(false) @map("is_frozen")
+  activeLecturerId Int?         @map("active_lecturer_id")
+  examLecturerId   Int?         @map("exam_lecturer_id")
+  // stats stores: caComponents, finalBlueprint, examTemplate
+  stats            Json         @default("{}")
+
+  activeLecturer SystemUser?   @relation("ActiveLecturer", fields: [activeLecturerId], references: [id], onDelete: SetNull)
+  examLecturer   SystemUser?   @relation("ExamLecturer",   fields: [examLecturerId],  references: [id], onDelete: SetNull)
+  studentMarks   StudentMark[]
+
+  @@map("modules")
+}
+
+// 3. Detailed Question-by-Question Marks Ledger
+model StudentMark {
+  id                      Int     @id @default(autoincrement())
+  moduleCode              String  @map("module_code")
+  studentIndex            String  @map("student_index")
+  // { "comp_uuid": { "Q1": 15, "Q2": 10 } }
+  caQuestionsMarks        Json    @default("{}") @map("ca_questions_marks")
+  // { "Q1": 20, "Q2": 18 } — Active Lecturer's final exam marks
+  finalExamQuestionsMarks Json    @default("{}") @map("final_exam_questions_marks")
+  // { "Q1": 19, "Q2": 17 } — Second Examiner's independent final exam marks
+  secondExamMarks         Json    @default("{}") @map("second_exam_marks")
+  // { "comp_uuid": true }
+  isAbsentCa              Json    @default("{}") @map("is_absent_ca")
+  isAbsentFinal           Boolean @default(false) @map("is_absent_final")
+
+  module Module @relation(fields: [moduleCode], references: [code], onDelete: Cascade)
+
+  @@unique([moduleCode, studentIndex])
+  @@map("student_marks")
+}

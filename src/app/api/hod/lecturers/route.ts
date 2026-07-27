@@ -1,75 +1,87 @@
-// src/app/api/hod/lecturers/route.ts
 import { NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * GET /api/hod/lecturers
+ * Returns all LECTURER users with their assigned module codes
+ */
 export async function GET() {
   try {
-    const queryText = `
-      SELECT 
-        u.id, 
-        u.full_name as "fullName", 
-        u.email,
-        COALESCE(
-          (SELECT json_agg(m.code) FROM modules m WHERE m.active_lecturer_id = u.id), 
-          '[]'::json
-        ) as "activeModules",
-        COALESCE(
-          (SELECT json_agg(m.code) FROM modules m WHERE m.exam_lecturer_id = u.id), 
-          '[]'::json
-        ) as "examModules"
-      FROM system_users u
-      WHERE u.role = 'LECTURER'
-      ORDER BY u.full_name ASC;
-    `;
-    const { rows } = await pool.query(queryText);
-    return NextResponse.json(rows);
+    const lecturers = await prisma.systemUser.findMany({
+      where: { role: "LECTURER" },
+      orderBy: { fullName: "asc" },
+      include: {
+        activeModules: { select: { code: true } },
+        examModules: { select: { code: true } },
+      },
+    });
+
+    const result = lecturers.map((l) => ({
+      id: l.id,
+      fullName: l.fullName ?? l.email,
+      email: l.email,
+      isHod: l.isHod,
+      isActiveLec: l.isActiveLec,
+      isExamLec: l.isExamLec,
+      activeModules: l.activeModules.map((m) => m.code),
+      examModules: l.examModules.map((m) => m.code),
+    }));
+
+    return NextResponse.json(result);
   } catch (error) {
-    console.error("Database error fetching lecturer assignments:", error);
+    console.error("Error fetching lecturers:", error);
     return NextResponse.json({ error: "Failed to fetch lecturers" }, { status: 500 });
   }
 }
 
+/**
+ * PATCH /api/hod/lecturers
+ * Re-assigns module workloads for a lecturer
+ */
 export async function PATCH(request: Request) {
   try {
     const { lecturerId, activeModuleCodes, examModuleCodes } = await request.json();
-    const lecLecturerId = parseInt(lecturerId, 10);
+    const lecId = parseInt(lecturerId, 10);
 
-    // Begin transaction to safely update across module rows cleanly
-    await pool.query("BEGIN");
-
-    // 1. Clear previous assignments for this lecturer
-    await pool.query(
-      `UPDATE modules SET active_lecturer_id = NULL WHERE active_lecturer_id = $1`, 
-      [lecLecturerId]
-    );
-    await pool.query(
-      `UPDATE modules SET exam_lecturer_id = NULL WHERE exam_lecturer_id = $1`, 
-      [lecLecturerId]
-    );
-
-    // 2. Insert new active lecturer pairings
-    if (activeModuleCodes && activeModuleCodes.length > 0) {
-      await pool.query(
-        `UPDATE modules SET active_lecturer_id = $1 WHERE code = ANY($2)`,
-        [lecLecturerId, activeModuleCodes]
-      );
+    if (isNaN(lecId)) {
+      return NextResponse.json({ error: "Invalid lecturer ID" }, { status: 400 });
     }
 
-    // 3. Insert new exam lecturer pairings
-    if (examModuleCodes && examModuleCodes.length > 0) {
-      await pool.query(
-        `UPDATE modules SET exam_lecturer_id = $1 WHERE code = ANY($2)`,
-        [lecLecturerId, examModuleCodes]
-      );
-    }
+    // Run all updates in a transaction
+    await prisma.$transaction(async (tx) => {
+      // Clear previous active assignments for this lecturer
+      await tx.module.updateMany({
+        where: { activeLecturerId: lecId },
+        data: { activeLecturerId: null },
+      });
+      // Clear previous exam assignments
+      await tx.module.updateMany({
+        where: { examLecturerId: lecId },
+        data: { examLecturerId: null },
+      });
 
-    await pool.query("COMMIT");
+      // Assign new active modules
+      if (activeModuleCodes?.length > 0) {
+        await tx.module.updateMany({
+          where: { code: { in: activeModuleCodes } },
+          data: { activeLecturerId: lecId },
+        });
+      }
+
+      // Assign new exam modules
+      if (examModuleCodes?.length > 0) {
+        await tx.module.updateMany({
+          where: { code: { in: examModuleCodes } },
+          data: { examLecturerId: lecId },
+        });
+      }
+    });
+
     return NextResponse.json({ success: true });
   } catch (error) {
-    await pool.query("ROLLBACK");
-    console.error("Failed transaction reassigning lecturer workloads:", error);
-    return NextResponse.json({ error: "Failed to reassign workload" }, { status: 500 });
+    console.error("Error updating lecturer assignments:", error);
+    return NextResponse.json({ error: "Failed to update assignments" }, { status: 500 });
   }
 }

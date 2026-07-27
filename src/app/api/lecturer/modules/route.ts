@@ -1,75 +1,177 @@
 import { NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
+import type { CaComponent, FinalBlueprint } from "@/types/hod";
 
 export const dynamic = "force-dynamic";
 
-// GET: Fetch only the modules where this specific user is the active lecturer
+/**
+ * GET /api/lecturer/modules?email=...  or  ?lecturerId=...
+ *
+ * Returns modules where the user is either activeLecturer or examLecturer.
+ * Injects roleInModule and isExaminerViewOnly per the spec.
+ */
 export async function GET(request: Request) {
-  try {
-    const userEmail = "asanka.s@wyb.ac.lk"; 
+  const { searchParams } = new URL(request.url);
+  const emailParam = searchParams.get("email");
+  const lecturerIdParam = searchParams.get("lecturerId");
 
-    const queryText = `
-      SELECT m.id, m.code, m.name, m.credits, m.is_frozen as "isFrozen", m.stats
-      FROM modules m
-      JOIN system_users u ON m.active_lecturer_id = u.id
-      WHERE u.email = $1
-      ORDER BY m.code ASC;
-    `;
-    
-    const { rows } = await pool.query(queryText, [userEmail]);
-    
-    //  Added log to track queries instantly in your VS Code terminal
-    console.log(`🔍 [API] Active lecturer rows found for ${userEmail}:`, rows.length);
-    
-    return NextResponse.json(rows);
+  // Race-condition guard from spec
+  if (lecturerIdParam === "admin-root") return NextResponse.json([]);
+
+  const parsedId = lecturerIdParam ? parseInt(lecturerIdParam, 10) : null;
+  if (lecturerIdParam && (parsedId === null || isNaN(parsedId))) {
+    return NextResponse.json([]);
+  }
+
+  if (!emailParam && parsedId === null) {
+    return NextResponse.json([]);
+  }
+
+  try {
+    const modules = await prisma.module.findMany({
+      where: {
+        OR: emailParam
+          ? [
+              { activeLecturer: { email: emailParam } },
+              { examLecturer: { email: emailParam } },
+            ]
+          : [
+              { activeLecturerId: parsedId },
+              { examLecturerId: parsedId },
+            ],
+      },
+      include: {
+        activeLecturer: { select: { id: true, fullName: true, email: true } },
+        examLecturer: { select: { id: true, fullName: true, email: true } },
+      },
+      orderBy: { code: "asc" },
+    });
+
+    const result = modules.map((m) => {
+      const isActiveLec = emailParam
+        ? m.activeLecturer?.email === emailParam
+        : m.activeLecturerId === parsedId;
+
+      return {
+        id: m.id,
+        code: m.code,
+        name: m.name,
+        credits: m.credits,
+        isFrozen: m.isFrozen,
+        stats: m.stats,
+        activeLecturerId: m.activeLecturerId,
+        examLecturerId: m.examLecturerId,
+        assignedActiveLec: m.activeLecturer
+          ? { id: m.activeLecturer.id, fullName: m.activeLecturer.fullName ?? "" }
+          : null,
+        assignedExamLec: m.examLecturer
+          ? { id: m.examLecturer.id, fullName: m.examLecturer.fullName ?? "" }
+          : null,
+        roleInModule: isActiveLec ? "LECTURER" : "EXAMINER",
+        isExaminerViewOnly: !isActiveLec,
+      };
+    });
+
+    return NextResponse.json(result);
   } catch (error) {
-    console.error("Database error fetching lecturer assignments:", error);
-    return NextResponse.json({ error: "Failed to load assigned modules" }, { status: 500 });
+    console.error("Error fetching lecturer modules:", error);
+    return NextResponse.json({ error: "Failed to load modules" }, { status: 500 });
   }
 }
 
-// PATCH: Save or modify CA component structures and Exam paper questions inside JSONB metrics block
+/**
+ * PATCH /api/lecturer/modules
+ *
+ * Body: { moduleCode, caComponents, finalBlueprint }
+ *
+ * Rules:
+ *  - Sum(caComponents.weightage) + finalBlueprint.weightage MUST equal 100
+ *  - If module.isFrozen → 403
+ *  - Auto-generates examTemplate from finalBlueprint.totalQuestions
+ */
 export async function PATCH(request: Request) {
   try {
-    const { moduleCode, caComponents, examTemplate } = await request.json();
-
-    // If CA components are passed, execute existing 100% confirmation rule checks
-    if (caComponents && Array.isArray(caComponents)) {
-      const totalWeightage = caComponents.reduce((sum: number, c: any) => sum + parseInt(c.weightage || 0, 10), 0);
-      if (caComponents.length > 0 && totalWeightage !== 100) {
-        return NextResponse.json({ error: `Total CA weightage must equal exactly 100%. Current: ${totalWeightage}%` }, { status: 400 });
-      }
-    }
-
-    const fetchCurrentStats = await pool.query(`SELECT stats FROM modules WHERE code = $1;`, [moduleCode]);
-    if (fetchCurrentStats.rows.length === 0) return NextResponse.json({ error: "Module code not found" }, { status: 404 });
-
-    const currentStats = fetchCurrentStats.rows[0].stats || {};
-    
-    //Merges both existing layout parameters and incoming configurations cleanly
-    const updatedStats = {
-      ...currentStats,
-      caComponents: caComponents || currentStats.caComponents || [],
-      examTemplate: examTemplate || currentStats.examTemplate || [],
-      caCompletionRate: (caComponents || currentStats.caComponents || []).length > 0 ? 100 : 0
+    const body = await request.json() as {
+      moduleCode: string;
+      marksheetStatus?: string;
+      caComponents?: CaComponent[];
+      finalBlueprint?: FinalBlueprint;
     };
 
-    const updateQuery = `
-      UPDATE modules 
-      SET stats = $2 
-      WHERE code = $1 AND is_frozen = false
-      RETURNING code, stats;
-    `;
-    
-    const { rows } = await pool.query(updateQuery, [moduleCode, JSON.stringify(updatedStats)]);
-    
-    if (rows.length === 0) {
-      return NextResponse.json({ error: "Cannot update. Blueprint is locked or frozen by the HOD." }, { status: 403 });
+    const { moduleCode, marksheetStatus, caComponents, finalBlueprint } = body;
+
+    if (!moduleCode) {
+      return NextResponse.json({ error: "moduleCode is required" }, { status: 400 });
     }
 
-    return NextResponse.json({ success: true, stats: rows[0].stats });
+    // ── Mode A: Status-only update (no weight check needed) ────────────────
+    if (marksheetStatus !== undefined) {
+      const existing = await prisma.module.findUnique({ where: { code: moduleCode } });
+      if (!existing) return NextResponse.json({ error: "Module not found" }, { status: 404 });
+      const currentStats = (existing.stats as any) ?? {};
+      const updated = await prisma.module.update({
+        where: { code: moduleCode },
+        data: { stats: { ...currentStats, marksheetStatus } as any },
+      });
+      return NextResponse.json({ success: true, stats: updated.stats });
+    }
+
+    // ── Mode B: Full blueprint save with 100% weight check ─────────────────
+    const caTotal = (caComponents ?? []).reduce(
+      (sum: number, c: CaComponent) => sum + (Number(c.weightage) || 0),
+      0
+    );
+    const finalWeight = Number(finalBlueprint?.weightage) || 0;
+    const grandTotal = caTotal + finalWeight;
+
+    if (grandTotal !== 100) {
+      return NextResponse.json(
+        {
+          error: `Total weight must equal exactly 100%. Current: ${grandTotal}% (CA: ${caTotal}% + Final: ${finalWeight}%)`,
+        },
+        { status: 400 }
+      );
+    }
+
+    // ── Operational lock check ──────────────────────────────────────────────
+    const existing = await prisma.module.findUnique({ where: { code: moduleCode } });
+    if (!existing) return NextResponse.json({ error: "Module not found" }, { status: 404 });
+    if (existing.isFrozen) {
+      return NextResponse.json(
+        { error: "Blueprint is locked or frozen by the HOD" },
+        { status: 403 }
+      );
+    }
+
+    // ── Auto-generate examTemplate from finalBlueprint ──────────────────────
+    const examTemplate =
+      finalBlueprint?.enabled && (finalBlueprint?.totalQuestions ?? 0) > 0
+        ? Array.from({ length: finalBlueprint!.totalQuestions }, (_, i) => ({
+            id: `Q${i + 1}`,
+            maxMarks: finalBlueprint!.marksPerQuestion,
+          }))
+        : [];
+
+    const currentStats = (existing.stats as any) ?? {};
+    const updatedStats = {
+      ...currentStats,
+      caComponents: caComponents ?? [],
+      finalBlueprint: finalBlueprint ?? {},
+      examTemplate,
+      caCompletionRate: (caComponents ?? []).length > 0 ? 100 : 0,
+      // Preserve existing marksheetStatus or set to DRAFT
+      marksheetStatus: currentStats.marksheetStatus ?? "DRAFT",
+    };
+
+    const updated = await prisma.module.update({
+      where: { code: moduleCode },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: { stats: updatedStats as any },
+    });
+
+    return NextResponse.json({ success: true, stats: updated.stats });
   } catch (error) {
-    console.error("Database error writing CA and Exam layout configuration matrix:", error);
-    return NextResponse.json({ error: "Failed to persist assessment and paper criteria mapping" }, { status: 500 });
+    console.error("Error saving module blueprint:", error);
+    return NextResponse.json({ error: "Failed to save blueprint" }, { status: 500 });
   }
 }

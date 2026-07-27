@@ -11,19 +11,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const router = useRouter();
 
-  // Development Session Initializer Matrix
+  // ── Session restore on mount ─────────────────────────────────────────────
   useEffect(() => {
-    setUser({
-      id: "admin-root",
-      email: "admin.security@wyb.ac.lk",
-      fullName: "System Root Administrator",
-      role: "ADMIN", // Switched to ADMIN role to test the Admin Management interface
-      capabilities: {
-        isHOD: false,
-        isActiveLec: false,
-        isExamLec: false
+    const stored = localStorage.getItem("weg_user_session");
+    if (stored) {
+      try {
+        const parsed: UserSession = JSON.parse(stored);
+        // Guard against stale admin-root dev tokens leaking into production
+        if (parsed && parsed.id !== "admin-root") {
+          setUser(parsed);
+          setIsLoading(false);
+          return;
+        }
+      } catch {
+        localStorage.removeItem("weg_user_session");
       }
-    });
+    }
+    // No valid stored session — clear state and go to login
+    setUser(null);
     setIsLoading(false);
   }, []);
 
@@ -34,11 +39,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(sessionData);
     setIsLoading(false);
 
-    // Context-level automated routing matrix based on base identity role
-    if (sessionData.role === "ADMIN") router.push("/dashboard/admin");
-    else if (sessionData.role === "STUDENT") router.push("/dashboard/student");
-    else if (sessionData.role === "LECTURER") {
+    // Role-based routing
+    if (sessionData.role === "ADMIN") {
+      router.push("/dashboard/admin");
+    } else if (sessionData.role === "LECTURER") {
+      // HOD gets HOD console first; they can switch to lecturer/examiner from there
       if (sessionData.capabilities.isHOD) router.push("/dashboard/hod");
+      else if (sessionData.capabilities.isActiveLec) router.push("/dashboard/lecturer");
+      else if (sessionData.capabilities.isExamLec) router.push("/dashboard/examiner");
       else router.push("/dashboard/lecturer");
     }
   };

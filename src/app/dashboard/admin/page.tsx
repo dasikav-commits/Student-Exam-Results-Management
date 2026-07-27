@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useAuth } from "@/context/AuthContext";
+import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { 
   Key, 
   Sliders, 
@@ -11,7 +13,9 @@ import {
   Search,
   Loader2,
   X,
-  ChevronDown
+  ChevronDown,
+  LogOut,
+  Lock
 } from "lucide-react";
 
 interface SystemUser {
@@ -36,6 +40,8 @@ interface AcademicModule {
 }
 
 export default function AdminDashboard() {
+  useRequireAuth();  // ← redirects to /login if no session
+  const { logout } = useAuth();
   const [activeTab, setActiveTab] = useState<"USERS" | "MODULES">("USERS");
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -153,20 +159,52 @@ export default function AdminDashboard() {
     }
   };
 
-  const toggleCapability = (userId: string, flag: "isHOD" | "isActiveLec" | "isExamLec") => {
+  const toggleCapability = async (userId: string, flag: "isHOD" | "isActiveLec" | "isExamLec") => {
+    // Map UI flag names → Prisma field names
+    const flagMap: Record<"isHOD" | "isActiveLec" | "isExamLec", "isHod" | "isActiveLec" | "isExamLec"> = {
+      isHOD: "isHod",
+      isActiveLec: "isActiveLec",
+      isExamLec: "isExamLec",
+    };
+    const dbFlag = flagMap[flag];
+
+    // Capture current value for rollback
+    const currentUser = users.find(u => u.id === userId);
+    if (!currentUser) return;
+    const currentValue = currentUser.capabilities[flag];
+    const newValue = !currentValue;
+
+    // Optimistic update — apply immediately so the UI feels instant
     setUsers(prev => prev.map(u => {
       if (u.id === userId) {
-        return {
-          ...u,
-          capabilities: {
-            ...u.capabilities,
-            [flag]: !u.capabilities[flag]
-          }
-        };
+        return { ...u, capabilities: { ...u.capabilities, [flag]: newValue } };
       }
       return u;
     }));
+
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: userId, flag: dbFlag, value: newValue }),
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result.error || "Server rejected capability update.");
+      }
+    } catch (err: any) {
+      // Rollback to previous value on failure
+      setUsers(prev => prev.map(u => {
+        if (u.id === userId) {
+          return { ...u, capabilities: { ...u.capabilities, [flag]: currentValue } };
+        }
+        return u;
+      }));
+      alert(`Failed to save capability change: ${err.message}`);
+    }
   };
+
 
   const filteredUsers = users.filter(u => 
     u.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -193,15 +231,13 @@ export default function AdminDashboard() {
             <UserPlus className="h-3.5 w-3.5" />
             <span>Manage Accounts</span>
           </button>
-          {/* <button 
-            onClick={() => setActiveTab("MODULES")}
-            className={`px-4 py-2 rounded-lg font-bold text-xs inline-flex items-center space-x-2 transition-all cursor-pointer ${
-              activeTab === "MODULES" ? "bg-slate-900 text-white shadow-sm" : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-            }`}
+          <button
+            onClick={logout}
+            className="px-4 py-2 rounded-lg font-bold text-xs inline-flex items-center space-x-2 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 transition-all cursor-pointer"
           >
-            <BookOpen className="h-3.5 w-3.5" />
-            <span>Module Registries</span>
-          </button>*/}
+            <LogOut className="h-3.5 w-3.5" />
+            <span>Sign Out</span>
+          </button>
         </div>
       </div>
 
@@ -289,54 +325,67 @@ export default function AdminDashboard() {
                       </td>
                       <td className="p-4 pr-6">
                         <div className="flex justify-center items-center gap-2">
-                          <button 
-                            onClick={() => toggleCapability(u.id, "isHOD")}
-                            className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold inline-flex items-center space-x-1.5 transition-all cursor-pointer ${
-                              u.capabilities.isHOD 
-                                ? "bg-blue-600 border-blue-600 text-white shadow-sm" 
-                                : "bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-700"
-                            }`}
-                          >
-                            <Key className="h-3 w-3" />
-                            <span>HOD Console</span>
-                          </button>
-                          
-                          <button 
-                            onClick={() => toggleCapability(u.id, "isActiveLec")}
-                            className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold inline-flex items-center space-x-1.5 transition-all cursor-pointer ${
-                              u.capabilities.isActiveLec 
-                                ? "bg-blue-600 border-blue-600 text-white shadow-sm" 
-                                : "bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-700"
-                            }`}
-                          >
-                            <Sliders className="h-3 w-3" />
-                            <span>Active Lec</span>
-                          </button>
-                          
-                          <button 
-                            onClick={() => toggleCapability(u.id, "isExamLec")}
-                            className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold inline-flex items-center space-x-1.5 transition-all cursor-pointer ${
-                              u.capabilities.isExamLec 
-                                ? "bg-blue-600 border-blue-600 text-white shadow-sm" 
-                                : "bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-700"
-                            }`}
-                          >
-                            <Flame className="h-3 w-3" />
-                            <span>Examiner Desk</span>
-                          </button>
-        
-
-                            <div className="h-5 w-px bg-slate-200 mx-1" />
-                            
-                            <button 
-                              onClick={() => handleDeleteUserAccount(u.id)}
-                              title="Permanently Purge Profile Account"
-                              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all border border-transparent hover:border-rose-100 cursor-pointer"
+                          {u.role === "ADMIN" ? (
+                            /* ── ADMIN accounts: capability controls are locked ── */
+                            <div
+                              title="Capability controls are restricted to Lecturer accounts only"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-400 text-[11px] font-bold select-none"
                             >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        </td>
+                              <Lock className="h-3 w-3" />
+                              <span>Controls Locked</span>
+                            </div>
+                          ) : (
+                            /* ── LECTURER accounts: full interactive capability matrix ── */
+                            <>
+                              <button 
+                                onClick={() => toggleCapability(u.id, "isHOD")}
+                                className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold inline-flex items-center space-x-1.5 transition-all cursor-pointer ${
+                                  u.capabilities.isHOD 
+                                    ? "bg-blue-600 border-blue-600 text-white shadow-sm" 
+                                    : "bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-700"
+                                }`}
+                              >
+                                <Key className="h-3 w-3" />
+                                <span>HOD Console</span>
+                              </button>
+                              
+                              <button 
+                                onClick={() => toggleCapability(u.id, "isActiveLec")}
+                                className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold inline-flex items-center space-x-1.5 transition-all cursor-pointer ${
+                                  u.capabilities.isActiveLec 
+                                    ? "bg-blue-600 border-blue-600 text-white shadow-sm" 
+                                    : "bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-700"
+                                }`}
+                              >
+                                <Sliders className="h-3 w-3" />
+                                <span>Active Lec</span>
+                              </button>
+                              
+                              <button 
+                                onClick={() => toggleCapability(u.id, "isExamLec")}
+                                className={`px-3 py-1.5 rounded-lg border text-[11px] font-bold inline-flex items-center space-x-1.5 transition-all cursor-pointer ${
+                                  u.capabilities.isExamLec 
+                                    ? "bg-blue-600 border-blue-600 text-white shadow-sm" 
+                                    : "bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-700"
+                                }`}
+                              >
+                                <Flame className="h-3 w-3" />
+                                <span>Examiner Desk</span>
+                              </button>
+                            </>
+                          )}
+
+                          <div className="h-5 w-px bg-slate-200 mx-1" />
+                          
+                          <button 
+                            onClick={() => handleDeleteUserAccount(u.id)}
+                            title="Permanently Purge Profile Account"
+                            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all border border-transparent hover:border-rose-100 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </td>
                       </tr>
                     ))
                   ) : (

@@ -9,25 +9,11 @@ export const loginSchema = z.object({
       message: "Must use a valid Wayamba University domain account",
     }),
   
-  // Password is treated as completely optional for local development testing
   password: z
     .string()
-    .optional()
-    .superRefine((val, ctx) => {
-      // If a password is actually typed, it checks the length restrictions
-      if (val && val.length < 8) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Password must be at least 8 characters long",
-        });
-      }
-      if (val && val.length > 50) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Password is too long",
-        });
-      }
-    }),
+    .min(1, "Password is required")
+    .min(8, "Password must be at least 8 characters long")
+    .max(50, "Password is too long"),
     
   rememberMe: z.boolean().optional(),
 });

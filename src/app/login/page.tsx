@@ -6,11 +6,9 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Lock, Mail, Eye, EyeOff, Loader2, Award } from "lucide-react";
 import { loginSchema, LoginInput } from "@/types/auth";
 import { useAuth } from "@/context/AuthContext";
-import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
   const { login } = useAuth();
-  const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
 
@@ -31,51 +29,29 @@ export default function LoginPage() {
   const onSubmit = async (data: LoginInput) => {
     setServerError(null);
     try {
-      // Clean variations and remove spaces
       const cleanEmail = data.email.toLowerCase().trim();
 
-      // Ensure backup validation allows both university domain configurations
       if (!cleanEmail.endsWith("@wayamba.ac.lk") && !cleanEmail.endsWith("@wyb.ac.lk")) {
         throw new Error("Must use a valid Wayamba University domain account (@wayamba.ac.lk or @wyb.ac.lk)");
       }
 
-      // Connect directly with the Neon DB API endpoint
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // ✅ FIXED: Restored the missing password object property inside the payload matrix
-        body: JSON.stringify({ 
-          email: cleanEmail,
-          password: data.password 
-        }),
+        body: JSON.stringify({ email: cleanEmail, password: data.password }),
       });
 
       const result = await res.json();
 
       if (!res.ok) {
-        throw new Error(result.error || "Authentication clearance failed");
+        throw new Error(result.error || "Authentication failed. Please check your credentials.");
       }
 
-      /// Inject the user object and session token directly into global AuthContext state
-        if (typeof login === "function") {
-          login(result.user, result.token); // ✨ Added result.token as the 2nd argument
-        } else {
-          console.warn("Auth context 'login' dispatcher matrix map not registered in current context scope hook.");
-        }
+      // AuthContext.login() handles session storage + role-based routing
+      login(result.user, result.token ?? "");
 
-      // Automated route dispatcher based on dynamic role attributes
-      if (result.user.role === "ADMIN") {
-        router.push("/dashboard/admin");
-      } else if (result.user.role === "LECTURER") {
-        if (result.user.capabilities?.isHOD || result.user.isHod) {
-          router.push("/dashboard/hod");
-        } else {
-          router.push("/dashboard/lecturer");
-        }
-      }
-      
     } catch (err: any) {
-      setServerError(err?.message || "Invalid credentials or database connection lost.");
+      setServerError(err?.message || "Invalid credentials or server error.");
     }
   };
 

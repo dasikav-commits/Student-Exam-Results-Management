@@ -1,71 +1,133 @@
 import { NextResponse } from "next/server";
-import { pool } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
-// GET: Fetch modules assigned to the Examiner and the student marks associated with them
+/**
+ * GET /api/examiner/marks
+ * Without ?moduleCode → returns modules where user is examLecturer
+ * With    ?moduleCode → returns StudentMark rows for that module,
+ *                       including both finalExamQuestionsMarks (active lec)
+ *                       and secondExamMarks (examiner's own marks for guided entry)
+ */
 export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const moduleCode = searchParams.get("moduleCode");
+  const emailParam = searchParams.get("email");
+
   try {
-    // Mocking Dr. Deepani's email who is assigned as Exam Lecturer in seed script
-    const userEmail = "deepani.w@wyb.ac.lk"; 
-
-    const { searchParams } = new URL(request.url);
-    const moduleCode = searchParams.get("moduleCode");
-
     if (!moduleCode) {
-      // Step A: If no module specified, return the modules assigned to this examiner
-      const queryModules = `
-        SELECT m.id, m.code, m.name, m.credits, m.is_frozen as "isFrozen"
-        FROM modules m
-        JOIN system_users u ON m.exam_lecturer_id = u.id
-        WHERE u.email = $1 ORDER BY m.code ASC;
-      `;
-      const { rows } = await pool.query(queryModules, [userEmail]);
-      return NextResponse.json(rows);
+      // Return modules assigned to this examiner
+      const where = emailParam
+        ? { examLecturer: { email: emailParam } }
+        : {};
+
+      const modules = await prisma.module.findMany({
+        where,
+        include: {
+          activeLecturer: { select: { id: true, fullName: true } },
+          examLecturer:   { select: { id: true, fullName: true } },
+        },
+        orderBy: { code: "asc" },
+      });
+
+      return NextResponse.json(
+        modules.map((m) => ({
+          id: m.id,
+          code: m.code,
+          name: m.name,
+          credits: m.credits,
+          isFrozen: m.isFrozen,
+          stats: m.stats,
+          assignedActiveLec: m.activeLecturer
+            ? { id: m.activeLecturer.id, fullName: m.activeLecturer.fullName ?? "" }
+            : null,
+        }))
+      );
     }
 
-    // Step B: If module code is provided, fetch the grading sheets
-    const queryMarks = `
-      SELECT id, student_index as "studentIndex", exam_marks_second as "examMarksSecond", 
-             final_theory_first as "finalTheoryFirst", is_absent as "isAbsent"
-      FROM student_marks
-      WHERE module_code = $1 ORDER BY student_index ASC;
-    `;
-    const { rows } = await pool.query(queryMarks, [moduleCode]);
-    return NextResponse.json(rows);
+    // Return student marks for the module.
+    // Both finalExamQuestionsMarks (active lec) and secondExamMarks are returned
+    // so the examiner can see the active lec's marks as a guided reference.
+    const marks = await prisma.studentMark.findMany({
+      where: { moduleCode },
+      orderBy: { studentIndex: "asc" },
+    });
+
+    return NextResponse.json(marks);
   } catch (error) {
-    console.error("Database error in examiner subsystem:", error);
-    return NextResponse.json({ error: "Failed to pull examiner tracking sheet" }, { status: 500 });
+    console.error("Examiner GET error:", error);
+    return NextResponse.json({ error: "Failed to load examiner data" }, { status: 500 });
   }
 }
 
-// PATCH: Commit Second Marking Q1-Q8 updates to the database
+/**
+ * PATCH /api/examiner/marks
+ * Saves the examiner's second marking into `secondExamMarks` (NOT finalExamQuestionsMarks).
+ * The active lecturer's finalExamQuestionsMarks are preserved untouched.
+ */
 export async function PATCH(request: Request) {
   try {
-    const { moduleCode, students } = await request.json();
+    const body = await request.json();
+    const { moduleCode, students, finalize } = body;
 
-    await pool.query("BEGIN");
-
-    for (const student of students) {
-      // Calculate total theory score from Q1-Q8 entries
-      const qTotal = Object.values(student.examMarksSecond || {}).reduce((sum: number, mark: any) => sum + (parseFloat(mark) || 0), 0);
-      
-      // Scale down to a percentage out of 100 max for theory component base
-      const finalTheorySecond = student.isAbsent ? 0 : Math.min(100, qTotal);
-
-      const updateQuery = `
-        UPDATE student_marks 
-        SET exam_marks_second = $3, final_theory_second = $4
-        WHERE module_code = $1 AND student_index = $2;
-      `;
-      await pool.query(updateQuery, [moduleCode, student.studentIndex, JSON.stringify(student.examMarksSecond || {}), finalTheorySecond]);
+    if (!moduleCode || typeof moduleCode !== "string") {
+      return NextResponse.json({ error: "moduleCode is required" }, { status: 400 });
+    }
+    if (!Array.isArray(students) || students.length === 0) {
+      return NextResponse.json({ error: "students array is required" }, { status: 400 });
     }
 
-    await pool.query("COMMIT");
+    // ── Save each student's SECOND EXAM marks only ────────────────────────────
+    // Active lec's finalExamQuestionsMarks are intentionally NOT touched here.
+    await prisma.$transaction(async (tx) => {
+      for (const s of students) {
+        if (!s.studentIndex) continue;
+
+        const existing = await tx.studentMark.findFirst({
+          where: { moduleCode, studentIndex: s.studentIndex },
+          select: { id: true },
+        });
+
+        if (existing) {
+          await tx.studentMark.update({
+            where: { id: existing.id },
+            data: {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              secondExamMarks: (s.secondExamMarks ?? {}) as any,
+              // isAbsentFinal is shared — examiner can mark student absent too
+              isAbsentFinal: s.isAbsentFinal ?? false,
+            },
+          });
+        }
+        // If no existing record, examiner cannot create one — active lec must save first
+      }
+    });
+
+    // ── Advance marksheetStatus ───────────────────────────────────────────────
+    const mod = await prisma.module.findUnique({ where: { code: moduleCode } });
+    if (mod) {
+      const currentStats = (mod.stats as any) ?? {};
+      const newStatus = finalize ? "FINALIZED" : "SECOND_CHECKING";
+      const order = ["DRAFT", "MARKING", "SECOND_CHECKING", "FINALIZED"];
+      const currentIdx = order.indexOf(currentStats.marksheetStatus ?? "DRAFT");
+      const newIdx = order.indexOf(newStatus);
+      if (newIdx > currentIdx) {
+        await prisma.module.update({
+          where: { code: moduleCode },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          data: { stats: { ...currentStats, marksheetStatus: newStatus } as any },
+        });
+      }
+    }
+
     return NextResponse.json({ success: true });
-  } catch (error) {
-    await pool.query("ROLLBACK");
-    console.error("Examiner transaction rollback processing fault:", error);
-    return NextResponse.json({ error: "Failed to persist moderation marks sheet" }, { status: 500 });
+  } catch (error: any) {
+    const msg = error?.message ?? String(error);
+    console.error("[examiner/marks PATCH] Error:", msg);
+    return NextResponse.json(
+      { error: `Failed to save examiner marks: ${msg}` },
+      { status: 500 }
+    );
   }
 }
