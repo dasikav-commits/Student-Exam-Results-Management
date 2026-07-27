@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type MarksheetStatus = "DRAFT" | "MARKING" | "SECOND_CHECKING" | "FINALIZED";
+type MarksheetStatus = "DRAFT" | "MARKING" | "SECOND_CHECKING" | "FINALIZED" | "RECONCILIATION_NEEDED" | "RECONCILED";
 
 interface LecturerData {
   id: number;
@@ -42,10 +42,12 @@ interface ModuleData {
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 const STATUS_META: Record<MarksheetStatus, { label: string; classes: string; Icon: any }> = {
-  DRAFT: { label: "Draft", classes: "bg-neutral-100 text-neutral-500", Icon: ClipboardList },
-  MARKING: { label: "Marking", classes: "bg-amber-100 text-amber-700", Icon: Clock },
-  SECOND_CHECKING: { label: "2nd Check", classes: "bg-indigo-100 text-indigo-700", Icon: Eye },
-  FINALIZED: { label: "Finalized", classes: "bg-emerald-100 text-emerald-700", Icon: CheckCircle },
+  DRAFT:                  { label: "Draft",                classes: "bg-neutral-100 text-neutral-500",             Icon: ClipboardList },
+  MARKING:                { label: "Marking",              classes: "bg-amber-100 text-amber-700",                 Icon: Clock },
+  SECOND_CHECKING:        { label: "2nd Check",            classes: "bg-indigo-100 text-indigo-700",               Icon: Eye },
+  FINALIZED:              { label: "Finalized",            classes: "bg-emerald-100 text-emerald-700",             Icon: CheckCircle },
+  RECONCILIATION_NEEDED:  { label: "Reconciliation",       classes: "bg-orange-100 text-orange-700",               Icon: RefreshCcw },
+  RECONCILED:             { label: "Reconciled",           classes: "bg-teal-100 text-teal-700",                   Icon: CheckCircle },
 };
 
 function StatusBadge({ status }: { status?: MarksheetStatus }) {

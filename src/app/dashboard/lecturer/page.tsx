@@ -8,7 +8,7 @@ import {
   BookOpen, Plus, Trash2, Save, Loader2, AlertCircle, CheckCircle2,
   Lock, Sliders, UserPlus, FileText,
   ChevronDown, Key, Flame, Shield, GraduationCap, ClipboardList,
-  BarChart2, Settings, ArrowLeftRight, ShieldOff
+  BarChart2, Settings, ArrowLeftRight, ShieldOff, GitMerge, Bell
 } from "lucide-react";
 import type { CaComponent, FinalBlueprint, DepartmentModule, StudentMarkRecord } from "@/types/hod";
 
@@ -63,8 +63,10 @@ export default function LecturerConsolePage() {
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [isPageLoading, setIsPageLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isApprovingReconciliation, setIsApprovingReconciliation] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [varianceThreshold, setVarianceThreshold] = useState(5);
+  // Variance threshold is fixed at 1 — no slider
+  const VARIANCE_THRESHOLD = 1;
 
   const userCapabilities = user?.capabilities ?? { isHOD: false, isActiveLec: true, isExamLec: false };
   // isActiveLec gate — pure examiners who land here see a locked-down view
@@ -273,6 +275,32 @@ export default function LecturerConsolePage() {
     }
   };
 
+  const handleApproveReconciliation = async () => {
+    if (!activeModule) return;
+    setIsApprovingReconciliation(true);
+    setFeedback(null);
+    try {
+      const res = await fetch("/api/lecturer/marks/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ moduleCode: activeModule.code }),
+      });
+      const result = await res.json();
+      if (res.ok) {
+        setFeedback({ type: "success", text: "Marksheet approved. The Examiner can now finalise the reconciliation." });
+        const newStats = { ...((activeModule.stats as any) ?? {}), lecturerApproved: true };
+        setModules(prev => prev.map(m => m.code === activeModule.code ? { ...m, stats: newStats } : m));
+        setActiveModule(prev => prev ? { ...prev, stats: newStats } : null);
+      } else {
+        setFeedback({ type: "error", text: result.error ?? "Failed to approve marksheet." });
+      }
+    } catch {
+      setFeedback({ type: "error", text: "Network error. Please try again." });
+    } finally {
+      setIsApprovingReconciliation(false);
+    }
+  };
+
   // ── Loading screen ─────────────────────────────────────────────────────────
   if (isPageLoading) {
     return (
@@ -412,6 +440,8 @@ export default function LecturerConsolePage() {
             )}
             {modules.map(mod => {
               const selected = activeModule?.code === mod.code;
+              const modStatus = (mod.stats as any)?.marksheetStatus as string | undefined;
+              const needsReview = modStatus === "RECONCILIATION_NEEDED";
               return (
                 <button
                   key={mod.id}
@@ -423,6 +453,11 @@ export default function LecturerConsolePage() {
                     <p className="text-[11px] text-neutral-400 mt-0.5 leading-tight">{mod.name}</p>
                     {mod.roleInModule === "EXAMINER" && (
                       <span className="inline-block mt-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 uppercase tracking-wide">Examiner</span>
+                    )}
+                    {needsReview && (
+                      <span className="inline-flex items-center gap-1 mt-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 uppercase tracking-wide animate-pulse">
+                        <Bell className="h-2.5 w-2.5" />Review Needed
+                      </span>
                     )}
                   </div>
                   {mod.isFrozen && <Lock className="h-3.5 w-3.5 text-neutral-400 shrink-0" />}
@@ -440,6 +475,22 @@ export default function LecturerConsolePage() {
             </div>
           ) : (
             <>
+              {/* Page-level reconciliation notification banner */}
+              {(() => {
+                const pendingCount = modules.filter(m => (m.stats as any)?.marksheetStatus === "RECONCILIATION_NEEDED" && !((m.stats as any)?.lecturerApproved)).length;
+                return pendingCount > 0 ? (
+                  <div className="bg-orange-50 border border-orange-200 rounded-2xl p-4 flex items-center gap-3">
+                    <div className="p-2 bg-orange-100 rounded-lg shrink-0">
+                      <Bell className="h-4 w-4 text-orange-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-xs font-bold text-orange-800">{pendingCount} module(s) require your review and approval</p>
+                      <p className="text-[11px] text-orange-600 mt-0.5">The Second Examiner has flagged a variance in the marks. Review the comparison below and approve before they can finalise.</p>
+                    </div>
+                    <GitMerge className="h-5 w-5 text-orange-400 shrink-0" />
+                  </div>
+                ) : null;
+              })()}
               {/* Module header badge */}
               <div className="bg-white rounded-2xl premium-border p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                 <div>
@@ -455,9 +506,12 @@ export default function LecturerConsolePage() {
                         MARKING: "bg-amber-100 text-amber-700",
                         SECOND_CHECKING: "bg-indigo-100 text-indigo-700",
                         FINALIZED: "bg-emerald-100 text-emerald-700",
+                        RECONCILIATION_NEEDED: "bg-orange-100 text-orange-700 animate-pulse",
+                        RECONCILED: "bg-teal-100 text-teal-700",
                       };
                       const labels: Record<string, string> = {
-                        DRAFT: "Draft", MARKING: "Marking", SECOND_CHECKING: "2nd Check", FINALIZED: "Finalized",
+                        DRAFT: "Draft", MARKING: "Marking", SECOND_CHECKING: "2nd Check",
+                        FINALIZED: "Finalized", RECONCILIATION_NEEDED: "Reconciliation Needed", RECONCILED: "Reconciled",
                       };
                       const key = status ?? "DRAFT";
                       return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${colors[key] ?? colors.DRAFT}`}>{labels[key] ?? key}</span>;
@@ -844,27 +898,47 @@ export default function LecturerConsolePage() {
                           <p className="text-sm text-neutral-400 italic text-center py-8">Final exam blueprint is not enabled. Enable it in the Blueprint Setup tab.</p>
                         ) : (
                           <div>
-                            {/* Header row with variance threshold slider (if finalized) */}
+                            {/* Header row with variance analysis (if finalized or reconciliation) */}
                             {(() => {
-                              const isFinalized = (activeModule?.stats as any)?.marksheetStatus === "FINALIZED";
-                              return isFinalized ? (
-                                <div className="flex flex-wrap items-center gap-4 mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                              const activeStatus = (activeModule?.stats as any)?.marksheetStatus as string | undefined;
+                              const showComparison = activeStatus === "FINALIZED" || activeStatus === "RECONCILIATION_NEEDED" || activeStatus === "RECONCILED";
+                              const isReconciliationNeeded = activeStatus === "RECONCILIATION_NEEDED";
+                              const lecturerAlreadyApproved = (activeModule?.stats as any)?.lecturerApproved === true;
+                              return showComparison ? (
+                                <div className={`flex flex-wrap items-center gap-4 mb-4 p-3 rounded-xl border ${isReconciliationNeeded ? "bg-orange-50 border-orange-200" : "bg-amber-50 border-amber-200"}`}>
                                   <div className="flex items-center gap-2">
-                                    <ArrowLeftRight className="h-4 w-4 text-amber-600" />
-                                    <span className="text-xs font-bold text-amber-800">Variance Analysis Mode</span>
-                                    <span className="text-[10px] text-amber-600">— Second examiner has finalized marks</span>
-                                  </div>
-                                  <div className="flex items-center gap-3 ml-auto">
-                                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 flex items-center gap-1">
-                                      <Sliders className="h-3 w-3" />Variance Tolerance
+                                    {isReconciliationNeeded
+                                      ? <GitMerge className="h-4 w-4 text-orange-600" />
+                                      : <ArrowLeftRight className="h-4 w-4 text-amber-600" />
+                                    }
+                                    <span className={`text-xs font-bold ${isReconciliationNeeded ? "text-orange-800" : "text-amber-800"}`}>
+                                      {isReconciliationNeeded ? "Joint Reconciliation Review" : "Variance Analysis Mode"}
                                     </span>
-                                    <span className="text-xs font-black bg-amber-500 text-white px-2 py-0.5 rounded">±{varianceThreshold}</span>
-                                    <input
-                                      type="range" min="1" max="20" value={varianceThreshold}
-                                      onChange={e => setVarianceThreshold(Number(e.target.value))}
-                                      className="w-32 accent-amber-600 h-1.5 rounded-full cursor-pointer"
-                                    />
+                                    {isReconciliationNeeded && (
+                                      <span className="text-[10px] text-orange-600">
+                                        — Variance &gt; {VARIANCE_THRESHOLD} detected. Review and approve the Examiner&apos;s marks.
+                                      </span>
+                                    )}
                                   </div>
+                                  {isReconciliationNeeded && !lecturerAlreadyApproved && (
+                                    <button
+                                      onClick={handleApproveReconciliation}
+                                      disabled={isApprovingReconciliation}
+                                      className="ml-auto shrink-0 flex items-center gap-2 h-9 px-4 text-xs font-bold bg-orange-600 text-white rounded-xl hover:bg-orange-700 disabled:opacity-40 transition-all cursor-pointer"
+                                    >
+                                      {isApprovingReconciliation
+                                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        : <CheckCircle2 className="h-3.5 w-3.5" />
+                                      }
+                                      Approve Examiner&apos;s Assessment
+                                    </button>
+                                  )}
+                                  {isReconciliationNeeded && lecturerAlreadyApproved && (
+                                    <div className="ml-auto flex items-center gap-1.5 text-[11px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-3 py-1.5 rounded-lg">
+                                      <CheckCircle2 className="h-3.5 w-3.5" />
+                                      Approved — Awaiting Examiner finalisation
+                                    </div>
+                                  )}
                                 </div>
                               ) : null;
                             })()}
@@ -875,7 +949,8 @@ export default function LecturerConsolePage() {
                               <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">{finalBlueprint.weightage}% · {finalBlueprint.questionsToAnswer}/{finalBlueprint.totalQuestions} Qs · {finalBlueprint.scoreMode}</span>
                             </div>
                             {(() => {
-                              const isFinalized = (activeModule?.stats as any)?.marksheetStatus === "FINALIZED";
+                              const activeStatus = (activeModule?.stats as any)?.marksheetStatus as string | undefined;
+                              const showComparison = activeStatus === "FINALIZED" || activeStatus === "RECONCILIATION_NEEDED" || activeStatus === "RECONCILED";
                               return (
                                 <div className="border border-neutral-200 rounded-xl overflow-auto">
                                   <table className="w-full text-xs text-left border-collapse">
@@ -886,18 +961,18 @@ export default function LecturerConsolePage() {
                                         {/* Active Lec (own) columns */}
                                         {finalQs.map(q => (
                                           <th key={`lec-${q}`} className="px-2 py-3 text-center bg-emerald-50/40 w-14">
-                                            {isFinalized && <span className="block text-[8px] font-normal text-emerald-500 leading-none mb-0.5">Lec</span>}
+                                            {showComparison && <span className="block text-[8px] font-normal text-emerald-500 leading-none mb-0.5">Lec</span>}
                                             {q}<span className="block text-[9px] text-neutral-400 font-normal">/{finalBlueprint.marksPerQuestion}</span>
                                           </th>
                                         ))}
                                         <th className="px-4 py-3 text-center bg-emerald-100/60 text-emerald-700 w-16">
-                                          {isFinalized && <span className="block text-[8px] font-normal text-emerald-500 leading-none mb-0.5">Lec</span>}
+                                          {showComparison && <span className="block text-[8px] font-normal text-emerald-500 leading-none mb-0.5">Lec</span>}
                                           Total
                                         </th>
                                         <th className="px-4 py-3 text-center w-14">AB</th>
                                         {!isFrozen && <th className="px-3 py-3 w-10" />}
-                                        {/* 2nd Examiner comparison columns — only after FINALIZED */}
-                                        {isFinalized && (
+                                        {/* 2nd Examiner comparison columns — only after showComparison */}
+                                        {showComparison && (
                                           <>
                                             <th className="px-2 py-3 w-8 bg-neutral-100">
                                               <ArrowLeftRight className="h-3 w-3 mx-auto text-neutral-400" />
@@ -925,10 +1000,10 @@ export default function LecturerConsolePage() {
                                         const lecTotal = isAbsent ? null : calcRowTotal(fm, finalBlueprint.questionsToAnswer, finalBlueprint.scoreMode);
                                         const examTotal = isAbsent ? null : calcRowTotal(sm, finalBlueprint.questionsToAnswer, finalBlueprint.scoreMode);
                                         const hasExamMarks = Object.keys(sm).length > 0;
-                                        const variance = isFinalized && lecTotal !== null && examTotal !== null && hasExamMarks
+                                        const variance = showComparison && lecTotal !== null && examTotal !== null && hasExamMarks
                                           ? Math.abs(lecTotal - examTotal)
                                           : null;
-                                        const flagged = variance !== null && variance > varianceThreshold;
+                                        const flagged = variance !== null && variance > VARIANCE_THRESHOLD;
                                         return (
                                           <tr key={s.studentIndex} className={`transition-colors ${isAbsent ? "bg-neutral-100/60 text-neutral-400 line-through" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/40"}`}>
                                             <td className="px-4 py-3 font-bold text-neutral-400">{idx + 1}</td>
@@ -967,8 +1042,8 @@ export default function LecturerConsolePage() {
                                                 </button>
                                               </td>
                                             )}
-                                            {/* 2nd Examiner read-only cells — only after FINALIZED */}
-                                            {isFinalized && (
+                                            {/* 2nd Examiner read-only cells */}
+                                            {showComparison && (
                                               <>
                                                 <td className="px-1 py-3 bg-neutral-100/80" />
                                                 {finalQs.map(q => (
@@ -1003,7 +1078,7 @@ export default function LecturerConsolePage() {
                                         );
                                       })}
                                       {students.length === 0 && (
-                                        <tr><td colSpan={finalQs.length + (isFinalized ? finalQs.length + 4 : 4) + (!isFrozen ? 1 : 0)} className="px-4 py-8 text-center text-neutral-400 italic">No students added yet.</td></tr>
+                                        <tr><td colSpan={finalQs.length + (showComparison ? finalQs.length + 4 : 4) + (!isFrozen ? 1 : 0)} className="px-4 py-8 text-center text-neutral-400 italic">No students added yet.</td></tr>
                                       )}
                                     </tbody>
                                   </table>
@@ -1034,8 +1109,17 @@ export default function LecturerConsolePage() {
                           {(activeModule.stats as any)?.finalBlueprint?.enabled && (
                             <button
                               onClick={handleSubmitForReview}
-                              disabled={isSaving || (activeModule.stats as any)?.marksheetStatus === "SECOND_CHECKING" || (activeModule.stats as any)?.marksheetStatus === "FINALIZED"}
-                              title={(activeModule.stats as any)?.marksheetStatus === "SECOND_CHECKING" ? "Already submitted" : "Submit to Examiner for second marking"}
+                              disabled={isSaving
+                                || (activeModule.stats as any)?.marksheetStatus === "SECOND_CHECKING"
+                                || (activeModule.stats as any)?.marksheetStatus === "FINALIZED"
+                                || (activeModule.stats as any)?.marksheetStatus === "RECONCILIATION_NEEDED"
+                                || (activeModule.stats as any)?.marksheetStatus === "RECONCILED"
+                              }
+                              title={
+                                (activeModule.stats as any)?.marksheetStatus === "SECOND_CHECKING" ? "Already submitted" :
+                                (activeModule.stats as any)?.marksheetStatus === "RECONCILIATION_NEEDED" ? "Reconciliation in progress" :
+                                "Submit to Examiner for second marking"
+                              }
                               className="flex items-center gap-2 h-10 px-5 text-xs font-bold bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-40 transition-all cursor-pointer"
                             >
                               <FileText className="h-3.5 w-3.5" />

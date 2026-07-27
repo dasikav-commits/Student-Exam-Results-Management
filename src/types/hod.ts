@@ -31,7 +31,13 @@ export interface ExamQuestionConfig {
 }
 
 /** Parsed Module.stats shape */
-export type MarksheetStatus = "DRAFT" | "MARKING" | "SECOND_CHECKING" | "FINALIZED";
+export type MarksheetStatus =
+  | "DRAFT"
+  | "MARKING"
+  | "SECOND_CHECKING"
+  | "FINALIZED"
+  | "RECONCILIATION_NEEDED"
+  | "RECONCILED";
 
 export interface ModuleStats {
   caComponents?: CaComponent[];

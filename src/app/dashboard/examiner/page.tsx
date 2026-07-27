@@ -6,8 +6,8 @@ import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import {
   ShieldCheck, BookOpen, Save, Loader2, AlertCircle, CheckCircle2,
-  Lock, Users, Sliders, AlertTriangle, ChevronDown, Key, Flame,
-  Eye, EyeOff, ArrowLeftRight
+  Lock, Users, AlertTriangle, ChevronDown, Key, Flame,
+  Eye, EyeOff, ArrowLeftRight, GitMerge, Clock
 } from "lucide-react";
 import type { StudentMarkRecord, ModuleStats } from "@/types/hod";
 
@@ -32,10 +32,12 @@ export default function ExaminerConsolePage() {
 
   const [isPageLoading, setIsPageLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isFinalisingReconciled, setIsFinalisingReconciled] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
-  const [varianceThreshold, setVarianceThreshold] = useState(5);
   const [showActiveLecMarks, setShowActiveLecMarks] = useState(true);
+  // Fixed variance threshold — no slider needed
+  const VARIANCE_THRESHOLD = 1;
 
   const userCapabilities = user?.capabilities ?? { isHOD: false, isActiveLec: false, isExamLec: true };
 
@@ -114,10 +116,14 @@ export default function ExaminerConsolePage() {
     const activeLecTotal = calcTotal(s.finalExamQuestionsMarks ?? {});
     const examTotal = calcTotal(s.secondExamMarks ?? {});
     const hasExamMarks = Object.keys(s.secondExamMarks ?? {}).length > 0;
-    return hasExamMarks && Math.abs(activeLecTotal - examTotal) > varianceThreshold;
+    return hasExamMarks && Math.abs(activeLecTotal - examTotal) > VARIANCE_THRESHOLD;
   });
 
-  const isFinalized = (activeModule?.stats as any)?.marksheetStatus === "FINALIZED";
+  const moduleStatus = (activeModule?.stats as any)?.marksheetStatus as string | undefined;
+  const isFinalized = moduleStatus === "FINALIZED";
+  const isReconciliationNeeded = moduleStatus === "RECONCILIATION_NEEDED";
+  const isReconciled = moduleStatus === "RECONCILED";
+  const isLecturerApproved = (activeModule?.stats as any)?.lecturerApproved === true;
 
   const handleSave = async (finalize = false) => {
     if (!activeModule) return;
@@ -139,21 +145,22 @@ export default function ExaminerConsolePage() {
       });
       const result = await res.json();
       if (res.ok) {
-        const msg = finalize
-          ? "Marking finalized. The Active Lecturer can now see your marks for comparison."
-          : "Second marking saved successfully.";
-        setFeedback({ type: "success", text: msg });
         if (finalize) {
-          setModules(prev =>
-            prev.map(m => m.code === activeModule.code
-              ? { ...m, stats: { ...(m.stats as any), marksheetStatus: "FINALIZED" } }
-              : m
-            )
-          );
-          setActiveModule(prev => prev
-            ? { ...prev, stats: { ...(prev.stats as any), marksheetStatus: "FINALIZED" } }
-            : null
-          );
+          if (result.requiresReconciliation) {
+            // Variance detected — needs Lecturer approval before finalising
+            const msg = `${flaggedStudents.length} student(s) have a mark variance > ${VARIANCE_THRESHOLD}. The Active Lecturer has been notified and must approve before you can finalise.`;
+            setFeedback({ type: "error", text: msg });
+            const newStats = { ...(activeModule.stats as any), marksheetStatus: "RECONCILIATION_NEEDED", lecturerApproved: false };
+            setModules(prev => prev.map(m => m.code === activeModule.code ? { ...m, stats: newStats } : m));
+            setActiveModule(prev => prev ? { ...prev, stats: newStats } : null);
+          } else {
+            setFeedback({ type: "success", text: "Marking finalised. The Active Lecturer can now see your marks for comparison." });
+            const newStats = { ...(activeModule.stats as any), marksheetStatus: "FINALIZED" };
+            setModules(prev => prev.map(m => m.code === activeModule.code ? { ...m, stats: newStats } : m));
+            setActiveModule(prev => prev ? { ...prev, stats: newStats } : null);
+          }
+        } else {
+          setFeedback({ type: "success", text: "Second marking saved successfully." });
         }
       } else {
         setFeedback({ type: "error", text: result.error ?? "Failed to save marks." });
@@ -162,6 +169,32 @@ export default function ExaminerConsolePage() {
       setFeedback({ type: "error", text: "Network error. Please retry." });
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleFinaliseReconciled = async () => {
+    if (!activeModule) return;
+    setIsFinalisingReconciled(true);
+    setFeedback(null);
+    try {
+      const res = await fetch("/api/examiner/marks/finalise-reconciled", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ moduleCode: activeModule.code }),
+      });
+      const result = await res.json();
+      if (res.ok) {
+        setFeedback({ type: "success", text: "Reconciliation finalised. The marksheet is now closed as RECONCILED." });
+        const newStats = { ...(activeModule.stats as any), marksheetStatus: "RECONCILED" };
+        setModules(prev => prev.map(m => m.code === activeModule.code ? { ...m, stats: newStats } : m));
+        setActiveModule(prev => prev ? { ...prev, stats: newStats } : null);
+      } else {
+        setFeedback({ type: "error", text: result.error ?? "Failed to finalise reconciliation." });
+      }
+    } catch {
+      setFeedback({ type: "error", text: "Network error. Please retry." });
+    } finally {
+      setIsFinalisingReconciled(false);
     }
   };
 
@@ -254,7 +287,7 @@ export default function ExaminerConsolePage() {
 
         {/* Analytics row */}
         {activeModule && (
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
             <div className="bg-white rounded-xl premium-border p-4 flex items-center gap-3">
               <div className="p-2.5 bg-indigo-50 rounded-lg"><Users className="h-5 w-5 text-indigo-600" /></div>
               <div>
@@ -268,17 +301,9 @@ export default function ExaminerConsolePage() {
                 <AlertTriangle className={`h-5 w-5 ${flaggedStudents.length > 0 ? "text-rose-600" : "text-emerald-600"}`} />
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Variance Flags</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Variance Flags <span className="font-normal">(threshold &gt; {VARIANCE_THRESHOLD})</span></p>
                 <p className="text-xl font-black">{flaggedStudents.length}</p>
               </div>
-            </div>
-
-            <div className="bg-white rounded-xl premium-border p-4 flex flex-col justify-center gap-1.5">
-              <div className="flex justify-between items-center">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 flex items-center gap-1"><Sliders className="h-3 w-3" />Variance Tolerance</span>
-                <span className="text-xs font-black bg-amber-500 text-white px-1.5 py-0.5 rounded">±{varianceThreshold}</span>
-              </div>
-              <input type="range" min="1" max="20" value={varianceThreshold} onChange={e => setVarianceThreshold(Number(e.target.value))} className="w-full accent-amber-600 h-1.5 rounded-full cursor-pointer" />
             </div>
 
             <div className="bg-white rounded-xl premium-border p-4 flex items-center justify-between gap-3">
@@ -346,6 +371,16 @@ export default function ExaminerConsolePage() {
                       {isFinalized && (
                         <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
                           <CheckCircle2 className="h-3 w-3" />FINALIZED
+                        </span>
+                      )}
+                      {isReconciliationNeeded && (
+                        <span className="flex items-center gap-1 text-[10px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-full animate-pulse">
+                          <GitMerge className="h-3 w-3" />RECONCILIATION NEEDED
+                        </span>
+                      )}
+                      {isReconciled && (
+                        <span className="flex items-center gap-1 text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-full">
+                          <CheckCircle2 className="h-3 w-3" />RECONCILED
                         </span>
                       )}
                     </div>
@@ -434,7 +469,7 @@ export default function ExaminerConsolePage() {
                             const variance = lecTotal !== null && examTotal !== null && hasExamMarks
                               ? Math.abs(lecTotal - examTotal)
                               : null;
-                            const flagged = variance !== null && variance > varianceThreshold;
+                            const flagged = variance !== null && variance > VARIANCE_THRESHOLD;
 
                             return (
                               <tr key={s.studentIndex} className={`transition-colors ${absent ? "bg-neutral-100/60 text-neutral-400 line-through" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/30"}`}>
@@ -474,7 +509,7 @@ export default function ExaminerConsolePage() {
                                         type="number" min="0" max={marksPerQ}
                                         value={examFm[q] ?? ""}
                                         placeholder="0"
-                                        disabled={activeModule.isFrozen || isFinalized}
+                                        disabled={activeModule.isFrozen || isFinalized || isReconciliationNeeded || isReconciled}
                                         onChange={e => updateSecondMark(s.studentIndex, q, Number(e.target.value))}
                                         className="w-12 bg-white border border-amber-200 rounded py-1 text-center font-bold focus:outline-none focus:border-amber-500 disabled:opacity-40"
                                       />
@@ -508,11 +543,12 @@ export default function ExaminerConsolePage() {
                     </div>
                   )}
 
-                  {students.length > 0 && !activeModule.isFrozen && !isFinalized && (
+                  {/* ── Action footer ─────────────────────────────────────── */}
+                  {students.length > 0 && !activeModule.isFrozen && !isFinalized && !isReconciliationNeeded && !isReconciled && (
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-3 border-t border-neutral-100">
                       <p className="text-[11px] text-neutral-400 max-w-sm">
-                        <strong>Save Progress</strong> to preserve your marks. Click <strong>Finalize Marking</strong> when complete —
-                        this makes your marks visible to the Active Lecturer for comparison.
+                        <strong>Save Progress</strong> to preserve your marks. Click <strong>Finalise Marking</strong> when complete —
+                        the system will check for variance and notify the Lecturer if reconciliation is needed.
                       </p>
                       <div className="flex gap-2">
                         <button
@@ -528,10 +564,44 @@ export default function ExaminerConsolePage() {
                           disabled={isSaving}
                           className="flex items-center gap-2 h-10 px-4 text-xs font-bold bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-40 transition-all cursor-pointer"
                         >
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          Finalize Marking
+                          {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                          Finalise Marking
                         </button>
                       </div>
+                    </div>
+                  )}
+
+                  {/* ── Reconciliation state footer ───────────────────────── */}
+                  {isReconciliationNeeded && students.length > 0 && (
+                    <div className="pt-3 border-t border-neutral-100 space-y-3">
+                      {isLecturerApproved ? (
+                        <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                          <div className="flex items-start gap-2.5">
+                            <CheckCircle2 className="h-4 w-4 text-teal-600 shrink-0 mt-0.5" />
+                            <p className="text-[11px] text-teal-700 font-semibold">
+                              The Active Lecturer has reviewed and approved your marksheet. You may now finalise the reconciliation.
+                            </p>
+                          </div>
+                          <button
+                            onClick={handleFinaliseReconciled}
+                            disabled={isFinalisingReconciled}
+                            className="shrink-0 flex items-center gap-2 h-10 px-5 text-xs font-bold bg-teal-600 text-white rounded-xl hover:bg-teal-700 disabled:opacity-40 transition-all cursor-pointer"
+                          >
+                            {isFinalisingReconciled ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitMerge className="h-3.5 w-3.5" />}
+                            Finalise Reconciliation
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start gap-2.5">
+                          <Clock className="h-4 w-4 text-orange-500 shrink-0 mt-0.5" />
+                          <div>
+                            <p className="text-[11px] font-bold text-orange-800">Awaiting Lecturer Approval</p>
+                            <p className="text-[10px] text-orange-600 mt-0.5">
+                              {flaggedStudents.length} student(s) have a variance &gt; {VARIANCE_THRESHOLD}. The Active Lecturer has been notified and must review and approve your marksheet before you can finalise.
+                            </p>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -539,7 +609,16 @@ export default function ExaminerConsolePage() {
                     <div className="flex items-center gap-2.5 pt-3 border-t border-neutral-100">
                       <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
                       <p className="text-[11px] text-emerald-700 font-semibold">
-                        Second marking is finalized. The Active Lecturer can now view your marks for variance analysis.
+                        Second marking is finalised. The Active Lecturer can now view your marks for variance analysis.
+                      </p>
+                    </div>
+                  )}
+
+                  {isReconciled && students.length > 0 && (
+                    <div className="flex items-center gap-2.5 pt-3 border-t border-neutral-100">
+                      <CheckCircle2 className="h-4 w-4 text-teal-600 shrink-0" />
+                      <p className="text-[11px] text-teal-700 font-semibold">
+                        Reconciliation complete. This marksheet is closed and the Examiner&apos;s marks are the official final exam record.
                       </p>
                     </div>
                   )}

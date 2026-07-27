@@ -80,47 +80,107 @@ export async function PATCH(request: Request) {
 
     // ── Save each student's SECOND EXAM marks only ────────────────────────────
     // Active lec's finalExamQuestionsMarks are intentionally NOT touched here.
-    await prisma.$transaction(async (tx) => {
-      for (const s of students) {
-        if (!s.studentIndex) continue;
-
-        const existing = await tx.studentMark.findFirst({
+    //
+    // Use the batch array form of $transaction (NOT the interactive callback form).
+    // The interactive form holds a single DB connection open across N sequential
+    // awaits — which exhausts the pg pool under load ("Unable to start a transaction
+    // in the given time"). The array form sends all statements at once, releasing
+    // the connection immediately after the batch completes.
+    //
+    // updateMany with the compound unique filter (moduleCode + studentIndex)
+    // naturally skips rows that don't yet exist, so no findFirst is needed.
+    const updateOps = students
+      .filter((s) => !!s.studentIndex)
+      .map((s) =>
+        prisma.studentMark.updateMany({
           where: { moduleCode, studentIndex: s.studentIndex },
-          select: { id: true },
-        });
+          data: {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            secondExamMarks: (s.secondExamMarks ?? {}) as any,
+            // isAbsentFinal is shared — examiner can mark student absent too
+            isAbsentFinal: s.isAbsentFinal ?? false,
+          },
+        })
+      );
 
-        if (existing) {
-          await tx.studentMark.update({
-            where: { id: existing.id },
-            data: {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              secondExamMarks: (s.secondExamMarks ?? {}) as any,
-              // isAbsentFinal is shared — examiner can mark student absent too
-              isAbsentFinal: s.isAbsentFinal ?? false,
-            },
-          });
-        }
-        // If no existing record, examiner cannot create one — active lec must save first
-      }
-    });
+    if (updateOps.length > 0) {
+      await Promise.all(updateOps);
+    }
 
-    // ── Advance marksheetStatus ───────────────────────────────────────────────
+    // ── Advance marksheetStatus on finalize ──────────────────────────────────
     const mod = await prisma.module.findUnique({ where: { code: moduleCode } });
     if (mod) {
       const currentStats = (mod.stats as any) ?? {};
-      const newStatus = finalize ? "FINALIZED" : "SECOND_CHECKING";
-      const order = ["DRAFT", "MARKING", "SECOND_CHECKING", "FINALIZED"];
-      const currentIdx = order.indexOf(currentStats.marksheetStatus ?? "DRAFT");
-      const newIdx = order.indexOf(newStatus);
-      if (newIdx > currentIdx) {
+
+      if (finalize) {
+        // ── Detect variance > 1 across all students ───────────────────────────
+        // Load the final blueprint so we can compute per-student totals
+        const finalBp = currentStats.finalBlueprint as
+          | { questionsToAnswer: number; scoreMode: "SUM" | "AVG" }
+          | undefined;
+        const questionsToAnswer = finalBp?.questionsToAnswer ?? 0;
+        const scoreMode: "SUM" | "AVG" = finalBp?.scoreMode ?? "SUM";
+
+        // Fetch fresh DB marks for this module
+        const allStudentMarks = await prisma.studentMark.findMany({
+          where: { moduleCode },
+          select: { studentIndex: true, finalExamQuestionsMarks: true, secondExamMarks: true, isAbsentFinal: true },
+        });
+
+        const calcTotal = (marks: Record<string, number>): number => {
+          const vals = Object.values(marks)
+            .slice(0, questionsToAnswer)
+            .map((v) => Number(v) || 0);
+          const sum = vals.reduce((a, b) => a + b, 0);
+          return scoreMode === "AVG" && questionsToAnswer > 0
+            ? sum / questionsToAnswer
+            : sum;
+        };
+
+        // Variance threshold is fixed at 1 (no slider)
+        const VARIANCE_THRESHOLD = 1;
+
+        const hasVariance = allStudentMarks.some((s) => {
+          if (s.isAbsentFinal) return false;
+          const examMarks = s.secondExamMarks as Record<string, number>;
+          if (Object.keys(examMarks).length === 0) return false; // examiner hasn't marked yet
+          const lecTotal = calcTotal(s.finalExamQuestionsMarks as Record<string, number>);
+          const examTotal = calcTotal(examMarks);
+          return Math.abs(lecTotal - examTotal) > VARIANCE_THRESHOLD;
+        });
+
+        const now = new Date().toISOString();
+        const newStatus = hasVariance ? "RECONCILIATION_NEEDED" : "FINALIZED";
+
         await prisma.module.update({
           where: { code: moduleCode },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          data: { stats: { ...currentStats, marksheetStatus: newStatus } as any },
+          data: {
+            stats: {
+              ...currentStats,
+              marksheetStatus: newStatus,
+              varianceThreshold: VARIANCE_THRESHOLD,
+              ...(hasVariance ? { reconciliationRequestedAt: now, lecturerApproved: false } : {}),
+            } as any,
+          },
         });
+
+        return NextResponse.json({ success: true, requiresReconciliation: hasVariance, newStatus });
+      } else {
+        // Progress save (not finalize) — advance DRAFT/SECOND_CHECKING → same or higher
+        const order = ["DRAFT", "MARKING", "SECOND_CHECKING", "FINALIZED", "RECONCILIATION_NEEDED", "RECONCILED"];
+        const currentIdx = order.indexOf(currentStats.marksheetStatus ?? "DRAFT");
+        const targetStatus = "SECOND_CHECKING";
+        const targetIdx = order.indexOf(targetStatus);
+        if (targetIdx > currentIdx) {
+          await prisma.module.update({
+            where: { code: moduleCode },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            data: { stats: { ...currentStats, marksheetStatus: targetStatus } as any },
+          });
+        }
       }
     }
-
     return NextResponse.json({ success: true });
   } catch (error: any) {
     const msg = error?.message ?? String(error);
