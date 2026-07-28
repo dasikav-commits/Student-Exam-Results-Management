@@ -17,6 +17,12 @@ model SystemUser {
   isHod         Boolean  @default(false) @map("is_hod")
   isActiveLec   Boolean  @default(false) @map("is_active_lec")
   isExamLec     Boolean  @default(false) @map("is_exam_lec")
+
+  // Password Recovery Fields
+  recoveryEmail    String?   @map("recovery_email")
+  resetToken       String?   @map("reset_token")
+  resetTokenExpiry DateTime? @map("reset_token_expiry")
+
   createdAt     DateTime @default(now()) @map("created_at")
 
   activeModules Module[] @relation("ActiveLecturer")

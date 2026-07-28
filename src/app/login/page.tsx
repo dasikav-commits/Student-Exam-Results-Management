@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
+import Link from "next/link";
 import { Lock, Mail, Eye, EyeOff, Loader2, Award } from "lucide-react";
 import { loginSchema, LoginInput } from "@/types/auth";
 import { useAuth } from "@/context/AuthContext";
@@ -166,6 +167,11 @@ export default function LoginPage() {
                 <label htmlFor="rememberMe" className="ml-2 block text-sm font-medium text-slate-700 select-none">
                   Keep me signed in
                 </label>
+              </div>
+              <div className="text-sm">
+                <Link href="/forgot-password" className="font-bold text-indigo-600 hover:text-indigo-500">
+                  Forgot password?
+                </Link>
               </div>
             </div>
 

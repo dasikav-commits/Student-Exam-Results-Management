@@ -4,10 +4,11 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
+import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import {
   ShieldCheck, BookOpen, Save, Loader2, AlertCircle, CheckCircle2,
   Lock, Users, Sliders, AlertTriangle, ChevronDown, Key, Flame,
-  Eye, EyeOff, ArrowLeftRight, GitMerge, Clock
+  Eye, EyeOff, ArrowLeftRight, GitMerge, Clock, User, LogOut
 } from "lucide-react";
 import type { StudentMarkRecord, ModuleStats } from "@/types/hod";
 
@@ -35,6 +36,7 @@ export default function ExaminerConsolePage() {
   const [isFinalisingReconciled, setIsFinalisingReconciled] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [showActiveLecMarks, setShowActiveLecMarks] = useState(true);
   // Fixed variance threshold — no slider needed
   const VARIANCE_THRESHOLD = 1;
@@ -257,7 +259,12 @@ export default function ExaminerConsolePage() {
                       <Flame className="h-3.5 w-3.5" /><span>Examiner Hub (Active)</span>
                     </button>
                     <div className="border-t border-neutral-100 pt-1 mt-1">
-                      <button onClick={logout} className="w-full text-left px-3 py-2 text-rose-600 font-semibold rounded-lg hover:bg-rose-50 cursor-pointer">Sign Out</button>
+                      <button onClick={() => { setIsRoleMenuOpen(false); setIsProfileOpen(true); }} className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-neutral-700 font-semibold rounded-lg hover:bg-neutral-50 cursor-pointer">
+                        <User className="h-3.5 w-3.5" /><span>Profile Settings</span>
+                      </button>
+                      <button onClick={logout} className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-rose-600 font-semibold rounded-lg hover:bg-rose-50 cursor-pointer">
+                        <LogOut className="h-3.5 w-3.5" /><span>Sign Out</span>
+                      </button>
                     </div>
                   </div>
                 </>
@@ -266,6 +273,8 @@ export default function ExaminerConsolePage() {
           </div>
         </div>
       </div>
+
+      <ProfileSettingsDrawer isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} />
 
       {/* ── Main Content ───────────────────────────────────────────────────── */}
       <div className="max-w-screen-2xl mx-auto p-4 sm:p-6">

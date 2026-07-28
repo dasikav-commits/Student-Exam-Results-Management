@@ -4,11 +4,13 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
+import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import {
   BookOpen, Plus, Trash2, Save, Loader2, AlertCircle, CheckCircle2,
   Lock, Sliders, UserPlus, FileText,
   ChevronDown, Key, Flame, Shield, GraduationCap, ClipboardList,
-  BarChart2, Settings, ArrowLeftRight, ShieldOff, GitMerge, Bell
+  BarChart2, Settings, ArrowLeftRight, ShieldOff, GitMerge, Bell,
+  User, LogOut
 } from "lucide-react";
 import type { CaComponent, FinalBlueprint, DepartmentModule, StudentMarkRecord } from "@/types/hod";
 
@@ -61,6 +63,7 @@ export default function LecturerConsolePage() {
   const [bpTab, setBpTab] = useState<BlueprintSubTab>("ca");
   const [marksTab, setMarksTab] = useState<MarksSubTab>("ca_marks");
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isPageLoading, setIsPageLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isApprovingReconciliation, setIsApprovingReconciliation] = useState(false);
@@ -413,7 +416,12 @@ export default function LecturerConsolePage() {
                       </button>
                     )}
                     <div className="border-t border-neutral-100 pt-1 mt-1">
-                      <button onClick={logout} className="w-full text-left px-3 py-2 text-rose-600 font-semibold rounded-lg hover:bg-rose-50 cursor-pointer">Sign Out</button>
+                      <button onClick={() => { setIsRoleMenuOpen(false); setIsProfileOpen(true); }} className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-neutral-700 font-semibold rounded-lg hover:bg-neutral-50 cursor-pointer">
+                        <User className="h-3.5 w-3.5" /><span>Profile Settings</span>
+                      </button>
+                      <button onClick={logout} className="w-full flex items-center gap-2.5 text-left px-3 py-2 text-rose-600 font-semibold rounded-lg hover:bg-rose-50 cursor-pointer">
+                        <LogOut className="h-3.5 w-3.5" /><span>Sign Out</span>
+                      </button>
                     </div>
                   </div>
                 </>
@@ -422,6 +430,8 @@ export default function LecturerConsolePage() {
           </div>
         </div>
       </div>
+
+      <ProfileSettingsDrawer isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} />
 
       {/* ── Main Layout ─────────────────────────────────────────────────────── */}
       <div className="max-w-screen-2xl mx-auto p-4 sm:p-6 flex gap-5 items-start">

@@ -4,10 +4,11 @@ import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
+import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import {
   Users, BookOpen, Lock, Unlock, Loader2, Layers, TrendingUp, Shield,
   Edit3, X, GraduationCap, FileCheck, ChevronDown, AlertCircle, CheckCircle,
-  Clock, ClipboardList, Eye, Sliders, Flame, LogOut, RefreshCcw
+  Clock, ClipboardList, Eye, Sliders, Flame, LogOut, RefreshCcw, User
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ export default function HodConsolePage() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"modules" | "lecturers" | "results">("modules");
   const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   // Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -278,6 +280,12 @@ export default function HodConsolePage() {
                       </div>
                     )}
                     <div className="border-t border-neutral-100 pt-1 mt-1">
+                      <button 
+                        onClick={() => { setIsWorkspaceMenuOpen(false); setIsProfileOpen(true); }} 
+                        className="w-full text-left flex items-center gap-2 px-3 py-2 text-neutral-700 font-semibold rounded-lg hover:bg-neutral-50 cursor-pointer"
+                      >
+                        <User className="h-3.5 w-3.5" />Profile Settings
+                      </button>
                       <button onClick={logout} className="w-full text-left flex items-center gap-2 px-3 py-2 text-rose-600 font-semibold rounded-lg hover:bg-rose-50 cursor-pointer">
                         <LogOut className="h-3.5 w-3.5" />Sign Out
                       </button>
@@ -289,6 +297,8 @@ export default function HodConsolePage() {
           </div>
         </div>
       </div>
+
+      <ProfileSettingsDrawer isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} />
 
       {/* ── Main Content ────────────────────────────────────────────────────── */}
       <div className="max-w-screen-2xl mx-auto p-4 sm:p-6 space-y-5">

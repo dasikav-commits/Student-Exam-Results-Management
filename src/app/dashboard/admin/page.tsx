@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
+import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { 
   Key, 
@@ -15,7 +16,9 @@ import {
   X,
   ChevronDown,
   LogOut,
-  Lock
+  Lock,
+  User,
+  Mail
 } from "lucide-react";
 
 interface SystemUser {
@@ -24,6 +27,7 @@ interface SystemUser {
   fullName: string;
   role: "ADMIN" | "LECTURER";
   department: string;
+  recoveryEmail?: string;
   capabilities: {
     isHOD: boolean;
     isActiveLec: boolean;
@@ -47,6 +51,7 @@ export default function AdminDashboard() {
 
   // Control state to toggle account side-drawer modal visibility
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   const [users, setUsers] = useState<SystemUser[]>([]);
   const [modules, setModules] = useState<AcademicModule[]>([]);
@@ -74,6 +79,7 @@ export default function AdminDashboard() {
             fullName: u.fullName,
             role: u.role,
             department: u.department || "Computing & Information Systems",
+            recoveryEmail: u.recoveryEmail,
             capabilities: {
               isHOD: u.isHod,
               isActiveLec: u.isActiveLec,
@@ -232,6 +238,13 @@ export default function AdminDashboard() {
             <span>Manage Accounts</span>
           </button>
           <button
+            onClick={() => setIsProfileOpen(true)}
+            className="px-4 py-2 rounded-lg font-bold text-xs inline-flex items-center space-x-2 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+          >
+            <User className="h-3.5 w-3.5" />
+            <span>Profile Settings</span>
+          </button>
+          <button
             onClick={logout}
             className="px-4 py-2 rounded-lg font-bold text-xs inline-flex items-center space-x-2 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 transition-all cursor-pointer"
           >
@@ -240,6 +253,8 @@ export default function AdminDashboard() {
           </button>
         </div>
       </div>
+
+      <ProfileSettingsDrawer isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} />
 
       {/* Main Container - Now expands to full-width beautifully */}
       <div className="w-full bg-white border border-slate-200/80 rounded-xl shadow-sm overflow-hidden flex flex-col">
@@ -287,9 +302,10 @@ export default function AdminDashboard() {
                   <th className="p-4 pl-6 w-12">#</th>
                   {activeTab === "USERS" ? (
                     <>
-                      <th className="p-4">Profile Information</th>
-                      <th className="p-4">Department</th>
-                      <th className="p-4">Role Matrix</th>
+                      <th scope="col" className="px-6 py-3 text-left">Account Details</th>
+                      <th scope="col" className="px-6 py-3 text-left">Department</th>
+                      <th scope="col" className="px-6 py-3 text-left">Recovery</th>
+                      <th scope="col" className="px-6 py-3 text-left">Role Access Matrix</th>
                       <th className="p-4 text-center">Interactive Capabilities Controls Matrix</th>
                     </>
                   ) : (
@@ -307,16 +323,26 @@ export default function AdminDashboard() {
                   filteredUsers.map((u, idx) => (
                     <tr key={u.id} className="hover:bg-slate-50/50 transition-colors">
                       <td className="p-4 pl-6 font-bold text-slate-400">{idx + 1}</td>
-                      <td className="p-4">
+                      <td className="px-6 py-4">
                         <span className="block font-bold text-slate-800 text-sm">{u.fullName}</span>
                         <span className="text-slate-400 font-normal block mt-0.5">{u.email}</span>
                       </td>
-                      <td className="p-4">
+                      <td className="px-6 py-4">
                         <span className="inline-block px-2.5 py-1 rounded bg-blue-50 text-blue-600 font-semibold text-[11px]">
                           {u.department}
                         </span>
                       </td>
-                      <td className="p-4">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {u.recoveryEmail ? (
+                          <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
+                            <Mail className="h-3 w-3 text-slate-400" />
+                            {u.recoveryEmail}
+                          </div>
+                        ) : (
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Not set</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-block font-bold px-2.5 py-0.5 rounded text-[10px] uppercase ${
                           u.role === "ADMIN" ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"
                         }`}>
