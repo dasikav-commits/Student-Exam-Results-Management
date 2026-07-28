@@ -25,6 +25,23 @@ interface LecturerData {
   examModules: string[];
 }
 
+interface HodCaComponent {
+  id: string;
+  name: string;
+  weightage: number;
+  questionsToAnswer: number;
+  marksPerQuestion: number;
+  scoreMode: "SUM" | "AVG";
+}
+
+interface HodFinalBlueprint {
+  enabled: boolean;
+  weightage: number;
+  questionsToAnswer: number;
+  marksPerQuestion: number;
+  scoreMode: "SUM" | "AVG";
+}
+
 interface ModuleData {
   id: number;
   code: string;
@@ -34,11 +51,56 @@ interface ModuleData {
   assignedActiveLec?: { id: number; fullName: string } | null;
   assignedExamLec?: { id: number; fullName: string } | null;
   stats: {
-    caComponents?: any[];
-    finalBlueprint?: { enabled: boolean };
+    caComponents?: HodCaComponent[];
+    finalBlueprint?: HodFinalBlueprint;
     caCompletionRate?: number;
     marksheetStatus?: MarksheetStatus;
   };
+}
+
+// ─── Total Calculation Helper ─────────────────────────────────────────────────
+function calcStudentTotal(
+  student: any,
+  caComponents: HodCaComponent[],
+  finalBlueprint: HodFinalBlueprint | undefined
+): { caTotal: number; examTotal: number; grandTotal: number } {
+  // ── CA ────────────────────────────────────────────────────────────────────
+  let caTotal = 0;
+  for (const comp of caComponents) {
+    const absent = student.isAbsentCa?.[comp.id] === true;
+    if (absent) continue;
+    const raw: Record<string, number> = student.caQuestionsMarks?.[comp.id] ?? {};
+    const vals = Object.values(raw).slice(0, comp.questionsToAnswer);
+    const sum = vals.reduce((a, b) => a + (Number(b) || 0), 0);
+    const rawScore = comp.scoreMode === "AVG" && comp.questionsToAnswer > 0
+      ? sum / comp.questionsToAnswer
+      : sum;
+    const maxRaw = comp.scoreMode === "AVG"
+      ? comp.marksPerQuestion
+      : comp.marksPerQuestion * comp.questionsToAnswer;
+    if (maxRaw > 0) caTotal += (rawScore / maxRaw) * comp.weightage;
+  }
+
+  // ── Exam ─────────────────────────────────────────────────────────────────
+  let examTotal = 0;
+  if (finalBlueprint?.enabled && !student.isAbsentFinal) {
+    // Prefer examiner's marks (secondExamMarks); fall back to lecturer's
+    const examRaw: Record<string, number> =
+      (Object.keys(student.secondExamMarks ?? {}).length > 0
+        ? student.secondExamMarks
+        : student.finalExamQuestionsMarks) ?? {};
+    const vals = Object.values(examRaw).slice(0, finalBlueprint.questionsToAnswer);
+    const sum = vals.reduce((a, b) => a + (Number(b) || 0), 0);
+    const rawScore = finalBlueprint.scoreMode === "AVG" && finalBlueprint.questionsToAnswer > 0
+      ? sum / finalBlueprint.questionsToAnswer
+      : sum;
+    const maxRaw = finalBlueprint.scoreMode === "AVG"
+      ? finalBlueprint.marksPerQuestion
+      : finalBlueprint.marksPerQuestion * finalBlueprint.questionsToAnswer;
+    if (maxRaw > 0) examTotal = (rawScore / maxRaw) * finalBlueprint.weightage;
+  }
+
+  return { caTotal, examTotal, grandTotal: caTotal + examTotal };
 }
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
@@ -607,11 +669,19 @@ export default function HodConsolePage() {
       {/* ── Results Viewer Modal ──────────────────────────────────────────────── */}
       {viewResultsModule && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden flex flex-col max-h-[90vh]">
+          <div className="bg-white w-full max-w-5xl rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden flex flex-col max-h-[90vh]">
             <div className="p-5 border-b border-neutral-100 bg-neutral-50 flex justify-between items-center">
               <div>
-                <h3 className="font-bold text-sm">{viewResultsModule.code} — Student Mark Records</h3>
-                <p className="text-xs text-neutral-400 mt-0.5">{viewResultsModule.name} · <StatusBadge status={viewResultsModule.stats?.marksheetStatus} /></p>
+                <h3 className="font-bold text-sm">{viewResultsModule.code} — Student Mark Summary</h3>
+                <p className="text-xs text-neutral-400 mt-0.5">
+                  {viewResultsModule.name} · <StatusBadge status={viewResultsModule.stats?.marksheetStatus} />
+                  {viewResultsModule.stats?.caComponents && viewResultsModule.stats?.finalBlueprint && (
+                    <span className="ml-2 text-[10px] text-neutral-400">
+                      CA {viewResultsModule.stats.caComponents.reduce((s, c) => s + c.weightage, 0)}% +
+                      Exam {viewResultsModule.stats.finalBlueprint.weightage}% = 100%
+                    </span>
+                  )}
+                </p>
               </div>
               <button onClick={() => { setViewResultsModule(null); setModuleStudents([]); }} className="w-8 h-8 rounded-full border border-neutral-200 flex items-center justify-center hover:bg-neutral-100 cursor-pointer">
                 <X className="h-4 w-4 text-neutral-500" />
@@ -626,31 +696,87 @@ export default function HodConsolePage() {
                 <table className="w-full text-xs border-collapse">
                   <thead>
                     <tr className="bg-neutral-50 text-[10px] font-bold uppercase tracking-wider text-neutral-400 border-b border-neutral-200">
-                      <th className="px-4 py-3">#</th>
-                      <th className="px-4 py-3">Student Index</th>
-                      <th className="px-4 py-3 text-center">CA Absent</th>
-                      <th className="px-4 py-3 text-center">Final Absent</th>
-                      <th className="px-4 py-3 text-center">CA Components</th>
-                      <th className="px-4 py-3 text-center">Final Marks</th>
+                      <th className="px-4 py-3 text-left">#</th>
+                      <th className="px-4 py-3 text-left">Student Index</th>
+                      <th className="px-4 py-3 text-center">Absent</th>
+                      <th className="px-4 py-3 text-right">
+                        CA Total
+                        {viewResultsModule.stats?.caComponents && (
+                          <span className="ml-1 font-normal normal-case">/ {viewResultsModule.stats.caComponents.reduce((s, c) => s + c.weightage, 0)}</span>
+                        )}
+                      </th>
+                      <th className="px-4 py-3 text-right">
+                        Exam Total
+                        {viewResultsModule.stats?.finalBlueprint && (
+                          <span className="ml-1 font-normal normal-case">/ {viewResultsModule.stats.finalBlueprint.weightage}</span>
+                        )}
+                      </th>
+                      <th className="px-4 py-3 text-right bg-indigo-50 text-indigo-700 rounded-t">Grand Total / 100</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100">
                     {moduleStudents.map((s: any, idx: number) => {
+                      const caComponents = viewResultsModule.stats?.caComponents ?? [];
+                      const finalBlueprint = viewResultsModule.stats?.finalBlueprint;
+                      const { caTotal, examTotal, grandTotal } = calcStudentTotal(s, caComponents, finalBlueprint);
                       const caAbsent = Object.values(s.isAbsentCa ?? {}).some(v => v === true);
-                      const caCount = Object.values(s.caQuestionsMarks ?? {}).length;
-                      const finalCount = Object.values(s.finalExamQuestionsMarks ?? {}).length;
+                      const anyAbsent = caAbsent || s.isAbsentFinal;
                       return (
-                        <tr key={s.studentIndex} className="hover:bg-neutral-50/40">
+                        <tr key={s.studentIndex} className={`transition-colors ${anyAbsent ? "bg-rose-50/30" : "hover:bg-neutral-50/40"}`}>
                           <td className="px-4 py-3 text-neutral-400 font-bold">{idx + 1}</td>
                           <td className="px-4 py-3 font-bold uppercase tracking-wider">{s.studentIndex}</td>
-                          <td className="px-4 py-3 text-center">{caAbsent ? <span className="text-rose-600 font-bold">AB</span> : <span className="text-emerald-600">✓</span>}</td>
-                          <td className="px-4 py-3 text-center">{s.isAbsentFinal ? <span className="text-rose-600 font-bold">AB</span> : <span className="text-emerald-600">✓</span>}</td>
-                          <td className="px-4 py-3 text-center">{caCount} CA component(s) entered</td>
-                          <td className="px-4 py-3 text-center">{finalCount} question(s) entered</td>
+                          <td className="px-4 py-3 text-center">
+                            <div className="flex justify-center gap-1.5 flex-wrap">
+                              {caAbsent && <span className="text-[9px] bg-rose-100 text-rose-700 font-bold px-1.5 py-0.5 rounded">CA-AB</span>}
+                              {s.isAbsentFinal && <span className="text-[9px] bg-rose-100 text-rose-700 font-bold px-1.5 py-0.5 rounded">EXAM-AB</span>}
+                              {!anyAbsent && <span className="text-emerald-600 text-[10px] font-bold">✓</span>}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-right font-semibold tabular-nums">
+                            {caAbsent ? <span className="text-rose-400 text-[10px] font-bold">ABSENT</span> : caTotal.toFixed(1)}
+                          </td>
+                          <td className="px-4 py-3 text-right font-semibold tabular-nums">
+                            {s.isAbsentFinal ? <span className="text-rose-400 text-[10px] font-bold">ABSENT</span> : examTotal.toFixed(1)}
+                          </td>
+                          <td className={`px-4 py-3 text-right font-black tabular-nums text-sm bg-indigo-50/40 ${
+                            grandTotal >= 75 ? "text-emerald-700" :
+                            grandTotal >= 50 ? "text-amber-700" :
+                            anyAbsent ? "text-rose-400" : "text-rose-700"
+                          }`}>
+                            {grandTotal.toFixed(1)}
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
+                  {moduleStudents.length > 0 && (
+                    <tfoot>
+                      <tr className="bg-neutral-100 text-[10px] font-bold text-neutral-600 border-t-2 border-neutral-300">
+                        <td colSpan={3} className="px-4 py-2">Class Average</td>
+                        <td className="px-4 py-2 text-right tabular-nums">
+                          {(moduleStudents.reduce((sum: number, s: any) => {
+                            const caComponents = viewResultsModule.stats?.caComponents ?? [];
+                            const fp = viewResultsModule.stats?.finalBlueprint;
+                            return sum + calcStudentTotal(s, caComponents, fp).caTotal;
+                          }, 0) / moduleStudents.length).toFixed(1)}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums">
+                          {(moduleStudents.reduce((sum: number, s: any) => {
+                            const caComponents = viewResultsModule.stats?.caComponents ?? [];
+                            const fp = viewResultsModule.stats?.finalBlueprint;
+                            return sum + calcStudentTotal(s, caComponents, fp).examTotal;
+                          }, 0) / moduleStudents.length).toFixed(1)}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums bg-indigo-50/60 font-black text-indigo-800">
+                          {(moduleStudents.reduce((sum: number, s: any) => {
+                            const caComponents = viewResultsModule.stats?.caComponents ?? [];
+                            const fp = viewResultsModule.stats?.finalBlueprint;
+                            return sum + calcStudentTotal(s, caComponents, fp).grandTotal;
+                          }, 0) / moduleStudents.length).toFixed(1)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               )}
             </div>
