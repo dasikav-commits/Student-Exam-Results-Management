@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Wayamba Exam Gateway",
-  description: "Academic Evaluation and Management System",
+  title: "Student Exam & Results Management",
+  description: "Wayamba University of Sri Lanka — Student Exam & Results Management System",
 };
 
 export default function RootLayout({

@@ -222,9 +222,12 @@ export default function AdminDashboard() {
       
       {/* Structural Header block context */}
       <div className="mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-slate-100 pb-5">
-        <div>
-          <h1 className="text-2xl font-black tracking-tight text-slate-900">System Control Desk</h1>
-          <p className="text-slate-500 text-xs mt-1 font-medium">Wayamba University Examination Administration System Panel</p>
+        <div className="flex items-center gap-3">
+          <img src="/wusl-logo.png" alt="Wayamba University" className="w-10 h-10 object-contain" />
+          <div>
+            <h1 className="text-2xl font-black tracking-tight text-slate-900">System Control Desk</h1>
+            <p className="text-slate-500 text-xs mt-1 font-medium">Student Exam &amp; Results Management · Admin Control Panel</p>
+          </div>
         </div>
         
         <div className="flex items-center gap-2">

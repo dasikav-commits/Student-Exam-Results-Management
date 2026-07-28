@@ -44,7 +44,7 @@ export async function POST(request: Request) {
     const { error } = await resend.emails.send({
       from: "Wayamba Exams <onboarding@resend.dev>", // Change to verified domain later
       to: [user.recoveryEmail],
-      subject: "Password Reset - Wayamba University Examination Administration System",
+      subject: "Password Reset — Student Exam & Results Management",
       html: `
         <div style="font-family: sans-serif; padding: 20px; color: #333;">
           <h2 style="color: #1a1a1a;">Reset your password</h2>
@@ -56,7 +56,7 @@ export async function POST(request: Request) {
           </div>
           <p>If you did not request this, you can safely ignore this email.</p>
           <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;" />
-          <p style="font-size: 12px; color: #777;">Wayamba University of Sri Lanka</p>
+          <p style="font-size: 12px; color: #777;">Student Exam &amp; Results Management · Wayamba University of Sri Lanka</p>
         </div>
       `,
     });

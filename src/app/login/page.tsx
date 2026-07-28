@@ -66,16 +66,18 @@ export default function LoginPage() {
         <div className="absolute bottom-0 right-0 w-96 h-96 bg-indigo-700 rounded-full mix-blend-multiply filter blur-3xl opacity-20 translate-x-20 translate-y-20" />
 
         <div className="relative z-10 flex items-center space-x-3">
-          <Award className="h-10 w-10 text-indigo-300" />
-          <span className="font-bold text-xl tracking-wider uppercase">WUSL Gateway</span>
+          <img src="/wusl-logo.png" alt="Wayamba University" className="h-12 w-12 object-contain" />
+          <div>
+            <span className="font-bold text-sm tracking-wider uppercase text-indigo-100">Wayamba University of Sri Lanka</span>
+          </div>
         </div>
 
         <div className="relative z-10 my-auto max-w-lg space-y-4">
           <h1 className="text-4xl font-extrabold tracking-tight leading-none text-white">
-            Examination Management & Mark Auditing System
+            Student Exam &amp; Results Management
           </h1>
           <p className="text-indigo-200 text-lg">
-            Secure processing hub for grading workflows, evaluation configurations, and unified student mark auditing dashboards.
+            Secure academic grading platform for mark entry, second examination, and result sheet generation.
           </p>
         </div>
 

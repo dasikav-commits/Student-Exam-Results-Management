@@ -321,11 +321,9 @@ export default function LecturerConsolePage() {
         <div className="sticky top-0 z-40 bg-white border-b border-neutral-200/80 px-6 py-3">
           <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center">
-                <GraduationCap className="h-5 w-5 text-white" />
-              </div>
+              <img src="/wusl-logo.png" alt="Wayamba University" className="w-10 h-10 object-contain" />
               <div>
-                <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Wayamba Exam Portal</p>
+                <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Student Exam &amp; Results Management</p>
                 <h1 className="text-sm font-black text-[#1a1a1a] leading-none">Lecturer Workspace</h1>
               </div>
             </div>
@@ -370,11 +368,9 @@ export default function LecturerConsolePage() {
       <div className="sticky top-0 z-40 bg-white border-b border-neutral-200/80 px-6 py-3">
         <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center">
-              <GraduationCap className="h-5 w-5 text-white" />
-            </div>
+            <img src="/wusl-logo.png" alt="Wayamba University" className="w-10 h-10 object-contain" />
             <div>
-              <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Wayamba Exam Portal</p>
+              <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Student Exam &amp; Results Management</p>
               <h1 className="text-sm font-black text-[#1a1a1a] leading-none">Lecturer Workspace</h1>
             </div>
           </div>
