@@ -783,12 +783,9 @@ export function sanitiseMarkRow(
   const isAbsentCa: Record<string, boolean> = {};
 
   for (const comp of caComponents ?? []) {
-    const absent = rawAbsentCa[comp.id] === true;
-    isAbsentCa[comp.id] = absent;
-    if (absent) {
-      caQuestionsMarks[comp.id] = {};
-      continue;
-    }
+    isAbsentCa[comp.id] = rawAbsentCa[comp.id] === true;
+    // Keep valid marks even while this component is marked absent. Clearing
+    // absence in the register should reveal the marks that were already entered.
     const maxima: Record<string, number> = {};
     for (const key of componentQuestionKeys(comp)) maxima[key] = componentQuestionMax(comp, key);
     caQuestionsMarks[comp.id] = sanitiseQuestionMap(rawCa[comp.id], maxima);

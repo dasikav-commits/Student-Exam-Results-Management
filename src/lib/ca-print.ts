@@ -42,17 +42,6 @@ function formatScore(value: number): string {
   return Number.isFinite(value) ? value.toFixed(1) : "0.0";
 }
 
-function absentCount(row: MarkRowLike, components: CaComponent[]): number {
-  return components.reduce((count, comp) => count + (row.isAbsentCa?.[comp.id] === true ? 1 : 0), 0);
-}
-
-function rowAbsentLabel(row: MarkRowLike, components: CaComponent[]): string {
-  if (components.length === 0) return "—";
-  const absent = absentCount(row, components);
-  if (absent === components.length) return "AB";
-  return absent > 0 ? `${absent}/${components.length}` : "—";
-}
-
 export function buildCaPrintHtml({
   moduleCode,
   moduleName,
@@ -73,7 +62,6 @@ export function buildCaPrintHtml({
     groupA.length > 0 ? `<th colspan="${groupA.length}" class="grp a">Group A — practical / performance</th>` : "",
     groupB.length > 0 ? `<th colspan="${groupB.length}" class="grp b">Group B — written / discrete</th>` : "",
     `<th rowspan="2" class="grand-head">Total Marks<span class="sub">out of ${formatScore(caWeight)}</span></th>`,
-    `<th rowspan="2">Absent</th>`,
     `<th rowspan="2">Eligible</th>`,
   ].join("");
 
@@ -106,20 +94,18 @@ export function buildCaPrintHtml({
         .join("");
 
       const weighted = computeWeightedScores(row, orderedComponents, null);
-      const absent = rowAbsentLabel(row, orderedComponents);
       return (
         `<tr>` +
         `<td class="left idx">${rowIndex + 1}. <strong>${esc(row.studentIndex)}</strong></td>` +
         componentCells +
         `<td class="grand">${formatScore(weighted.ca)}</td>` +
-        `<td class="${absent === "AB" ? "absent" : absent !== "—" ? "partial-absent" : "muted"}">${esc(absent)}</td>` +
         `<td class="eligible">&#10003;</td>` +
         `</tr>`
       );
     })
     .join("");
 
-  const columnCount = orderedComponents.length + 4;
+  const columnCount = orderedComponents.length + 3;
   const emptyRow = eligibleRows.length === 0
     ? `<tr><td colspan="${columnCount}" class="empty">No eligible students on this marksheet.</td></tr>`
     : "";
@@ -132,29 +118,28 @@ export function buildCaPrintHtml({
 <title>${esc(moduleCode)} — CA Evaluation Register</title>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: "Segoe UI", Arial, sans-serif; color: #171717; margin: 24px; }
-  h1 { font-size: 16px; margin: 0 0 2px; }
-  .meta { font-size: 10px; color: #666; margin-bottom: 14px; line-height: 1.6; }
-  table { width: 100%; border-collapse: collapse; font-size: 10px; }
-  th, td { border: 1px solid #bbb; padding: 5px 7px; text-align: center; }
-  th { background: #f4f4f4; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+  body { font-family: "Segoe UI", Arial, sans-serif; color: #171717; margin: 24px; font-size: 13px; }
+  h1 { font-size: 18px; margin: 0 0 3px; }
+  .meta { font-size: 12px; color: #444; margin-bottom: 16px; line-height: 1.6; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { border: 1px solid #999; padding: 7px 8px; text-align: center; }
+  th { background: #f1f1f1; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
   th.left, td.left { text-align: left; }
   th.student, td.idx { min-width: 120px; white-space: nowrap; }
-  th.grp.a { background: #f3eefe; color: #5b21b6; }
-  th.grp.b { background: #fff2e5; color: #c2410c; }
-  th.comp.a { background: #faf7ff; color: #6d28d9; }
-  th.comp.b { background: #fffaf5; color: #c2410c; }
-  th .sub { display: block; margin-top: 3px; font-weight: 400; text-transform: none; letter-spacing: 0; color: #777; }
+  th.grp.a { background: #eee5ff; color: #4c1d95; }
+  th.grp.b { background: #ffead5; color: #9a3412; }
+  th.comp.a { background: #f7f2ff; color: #5b21b6; }
+  th.comp.b { background: #fff6eb; color: #9a3412; }
+  th .sub { display: block; margin-top: 4px; font-size: 10px; font-weight: 500; text-transform: none; letter-spacing: 0; color: #444; }
   th.grand-head { background: #eef2ff; color: #4338ca; min-width: 90px; }
   td.grand { font-weight: 800; background: #eef2ff; }
   td.score { font-weight: 700; white-space: nowrap; }
-  td.score .out-of { color: #888; font-size: 9px; font-weight: 400; }
-  td.blank, td.muted { color: #999; }
+  td.score .out-of { color: #555; font-size: 10px; font-weight: 500; }
+  td.blank { color: #666; }
   td.absent { color: #b91c1c; font-weight: 800; background: #fff1f2; }
-  td.partial-absent { color: #c2410c; font-weight: 700; }
   td.eligible { color: #047857; font-weight: 800; }
-  td.empty { padding: 18px; color: #888; font-style: italic; }
-  .note { margin-top: 10px; font-size: 9px; color: #777; }
+  td.empty { padding: 20px; color: #555; font-style: italic; }
+  .note { margin-top: 12px; font-size: 11px; color: #444; line-height: 1.5; }
   @page { size: landscape; margin: 12mm; }
 </style>
 </head>
@@ -175,7 +160,7 @@ export function buildCaPrintHtml({
   </table>
   <p class="note">
     Group A columns show one overall mark; Group B columns show the component total. Values are shown against each component&apos;s maximum.
-    Total Marks is the weighted CA contribution. AB marks a student absent across all selected CA components; a fraction marks component-level absence.
+    Total Marks is the weighted CA contribution. AB marks absence for the corresponding component.
   </p>
 </body>
 </html>`;
