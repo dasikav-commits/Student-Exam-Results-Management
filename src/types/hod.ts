@@ -82,6 +82,8 @@ export interface ModuleStats {
   lecturerApprovedAt?: string;
   /** Set when the lecturer submits the marksheet for second checking. */
   submittedAt?: string;
+  /** Who the submitted marksheet was addressed to (same submit, two addressees). */
+  submittedTo?: "FACULTY" | "HOD";
   /** Set when the lecturer recalls a submission back to MARKING. */
   recalledAt?: string;
   recallCount?: number;
@@ -134,4 +136,10 @@ export interface StudentMarkRecord {
   secondExamMarks: Record<string, number>;
   isAbsentCa: Record<string, boolean>;
   isAbsentFinal: boolean;
+  /**
+   * Cohort eligibility. Defaults to true (the HOD authorises the cohort when
+   * the module is created); rows before the column existed are treated as
+   * eligible, so this stays optional.
+   */
+  isEligible?: boolean;
 }

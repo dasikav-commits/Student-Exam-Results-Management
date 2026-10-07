@@ -244,6 +244,17 @@ export interface MarkRowLike {
   secondExamMarks?: Record<string, number> | null;
   isAbsentCa?: Record<string, boolean> | null;
   isAbsentFinal?: boolean | null;
+  /** Cohort eligibility — rows without the flag (pre-migration) count as eligible. */
+  isEligible?: boolean | null;
+}
+
+/**
+ * Whether a roster row counts towards the marksheet. Ineligible students stay
+ * visible on the grid but are excluded from completeness audits, weighted
+ * totals, CSV and PDF exports.
+ */
+export function isRowEligible(row: Pick<MarkRowLike, "isEligible"> | null | undefined): boolean {
+  return row?.isEligible !== false;
 }
 
 // ─── Question helpers ────────────────────────────────────────────────────────
@@ -560,7 +571,10 @@ export function validateMarksheet(
   }
 
   // ── Per-student cell coverage & range ─────────────────────────────────────
+  // Ineligible students are outside the authorised cohort: their blanks must
+  // not block submission, so they are skipped by the coverage audit entirely.
   for (const row of rows) {
+    if (!isRowEligible(row)) continue;
     const index = row.studentIndex;
 
     for (const comp of comps) {
@@ -745,6 +759,8 @@ export interface SanitisedRow {
   finalExamQuestionsMarks: Record<string, number>;
   isAbsentCa: Record<string, boolean>;
   isAbsentFinal: boolean;
+  /** Cohort eligibility — anything but an explicit `false` stays eligible. */
+  isEligible: boolean;
 }
 
 /**
@@ -786,8 +802,9 @@ export function sanitiseMarkRow(
   }
 
   const finalExamQuestionsMarks = isAbsentFinal ? {} : sanitiseQuestionMap(rawFinal, finalMaxima);
+  const isEligible = raw.isEligible !== false;
 
-  return { studentIndex, caQuestionsMarks, finalExamQuestionsMarks, isAbsentCa, isAbsentFinal };
+  return { studentIndex, caQuestionsMarks, finalExamQuestionsMarks, isAbsentCa, isAbsentFinal, isEligible };
 }
 
 /** Keeps only the expected keys, drops blanks, clamps each to its own maximum. */
@@ -847,7 +864,9 @@ export function buildMarksheetCsv(
 
   const lines = [header.map(csvCell).join(",")];
 
-  for (const row of rows) {
+  // Ineligible students are outside the authorised cohort — the export carries
+  // only the rows that count towards the module result.
+  for (const row of rows.filter(isRowEligible)) {
     const cells: unknown[] = [row.studentIndex];
 
     for (const comp of comps) {

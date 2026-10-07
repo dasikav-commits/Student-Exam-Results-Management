@@ -30,6 +30,8 @@ export interface MarksheetSummaryProps {
   showComparison: boolean;
   onExport: () => void;
   onClose: () => void;
+  /** Roster rows unticked as ineligible — shown for transparency, never averaged. */
+  excludedCount?: number;
 }
 
 function scoreTone(total: number): string {
@@ -50,6 +52,7 @@ export function MarksheetSummary({
   showComparison,
   onExport,
   onClose,
+  excludedCount = 0,
 }: MarksheetSummaryProps) {
   const completeCount = rows.filter(row => row.progress === 100).length;
   const flaggedCount = rows.filter(row => row.varianceFlagged).length;
@@ -76,6 +79,11 @@ export function MarksheetSummary({
           <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
             Average {average.toFixed(1)}/100
           </span>
+          {excludedCount > 0 && (
+            <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-500" title="Ineligible students are excluded from these figures">
+              {excludedCount} ineligible excluded
+            </span>
+          )}
           {showComparison && flaggedCount > 0 && (
             <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">
               {flaggedCount} variance flag{flaggedCount === 1 ? "" : "s"}

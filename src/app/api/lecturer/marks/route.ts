@@ -151,6 +151,7 @@ export async function POST(request: Request) {
         finalExamQuestionsMarks: row.finalExamQuestionsMarks,
         isAbsentCa: row.isAbsentCa,
         isAbsentFinal: row.isAbsentFinal,
+        isEligible: row.isEligible,
       };
 
       if (existingIndexes.has(row.studentIndex)) {

@@ -13,7 +13,7 @@ import {
   type MarkRowLike,
   type MarksheetStatusValue,
 } from "@/lib/lecturer-marks";
-import type { CaComponent, FinalBlueprint } from "@/types/hod";
+import type { FinalBlueprint } from "@/types/hod";
 
 export const dynamic = "force-dynamic";
 
@@ -120,6 +120,7 @@ export async function PATCH(request: Request) {
       marksheetStatus?: unknown;
       caComponents?: unknown;
       finalBlueprint?: unknown;
+      submittedTo?: unknown;
     } | null;
 
     if (!body) {
@@ -205,6 +206,7 @@ export async function PATCH(request: Request) {
             finalExamQuestionsMarks: true,
             isAbsentCa: true,
             isAbsentFinal: true,
+            isEligible: true,
           },
         });
 
@@ -224,9 +226,15 @@ export async function PATCH(request: Request) {
       }
 
       const now = new Date().toISOString();
+      // The submit dropdown addresses the same submission to either the Second
+      // Examiner ("Faculty") or the HOD; only those two values are recorded.
+      const submittedTo =
+        target === "SECOND_CHECKING" && (body.submittedTo === "FACULTY" || body.submittedTo === "HOD")
+          ? body.submittedTo
+          : undefined;
       const transitionMeta: Record<string, unknown> =
         target === "SECOND_CHECKING"
-          ? { submittedAt: now }
+          ? { submittedAt: now, ...(submittedTo ? { submittedTo } : {}) }
           : { recalledAt: now, recallCount: Number(currentStats.recallCount ?? 0) + 1 };
 
       const updated = await prisma.module.update({
