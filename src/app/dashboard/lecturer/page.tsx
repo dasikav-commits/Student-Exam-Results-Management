@@ -16,7 +16,7 @@ import {
   BarChart2, Settings, ArrowLeftRight, ShieldOff, GitMerge, Bell,
   User, LogOut, Search, Download, ClipboardPaste, RotateCcw, Undo2,
   TriangleAlert, Info, Table2, X, Send, ArrowDownToLine,
-  Pencil, Check, Printer, Maximize2, GraduationCap, Building2,
+  Pencil, Check, Printer, Eye, GraduationCap, Building2,
 } from "lucide-react";
 import type { CaComponent, CaGroup, DepartmentModule, FinalBlueprint, ModuleStats, StudentMarkRecord } from "@/types/hod";
 import {
@@ -29,6 +29,7 @@ import {
   buildMarksheetCsv,
   caGroupOf,
   caTypeLabel,
+  componentMaxScore,
   componentQuestionCount,
   componentQuestionKeys,
   componentQuestionMax,
@@ -98,6 +99,10 @@ function clampMark(value: number, max: number): number {
   return Math.min(ceiling, Math.max(0, value));
 }
 
+function groupOfComponent(comp: CaComponent): CaGroup {
+  return comp.group ?? caGroupOf(comp.type);
+}
+
 /** Excel / Sheets paste → grid of numbers (blank cells become null). */
 function parseClipboardGrid(text: string): (number | null)[][] {
   return text
@@ -154,10 +159,10 @@ export default function LecturerConsolePage() {
   const [bulkText, setBulkText] = useState("");
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isIssuesOpen, setIsIssuesOpen] = useState(false);
-  /** Student indexes whose register row is unlocked for inline editing. */
+  /** Rows unlocked by the Action-column edit button; their component dialogs open in edit mode. */
   const [editingRows, setEditingRows] = useState<Set<string>>(new Set());
-  /** Component whose drill-down marks popup is open (CA grid header click). */
-  const [popupCompId, setPopupCompId] = useState<string | null>(null);
+  /** Student/component pair whose view dialog is open from a register cell. */
+  const [popupTarget, setPopupTarget] = useState<{ compId: string; studentIndex: string } | null>(null);
   const [isSendMenuOpen, setIsSendMenuOpen] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [isConfirmBusy, setIsConfirmBusy] = useState(false);
@@ -190,6 +195,8 @@ export default function LecturerConsolePage() {
     setBulkText("");
     setIsSummaryOpen(false);
     setIsIssuesOpen(false);
+    setEditingRows(new Set());
+    setPopupTarget(null);
     setMainTab("blueprint");
 
     const stats = statsOf(mod);
@@ -344,14 +351,28 @@ export default function LecturerConsolePage() {
     [visibleStudents, caComponents, finalBlueprint, showComparison, issues]
   );
 
+  /** Register order is always Group A first, then Group B, preserving blueprint order within each group. */
+  const registerComponents = useMemo(
+    () => [
+      ...caComponents.filter(comp => groupOfComponent(comp) === "A"),
+      ...caComponents.filter(comp => groupOfComponent(comp) === "B"),
+    ],
+    [caComponents]
+  );
+
   /** Roster rows unticked as ineligible — excluded from totals and exports. */
   const ineligibleCount = useMemo(
     () => students.filter(row => !isRowEligible(row)).length,
     [students]
   );
 
-  /** Component whose drill-down marks popup is currently open. */
-  const popupComponent = caComponents.find(comp => comp.id === popupCompId) ?? null;
+  /** Component/student currently selected through a component-cell view button. */
+  const popupComponent = popupTarget
+    ? caComponents.find(comp => comp.id === popupTarget.compId) ?? null
+    : null;
+  const popupStudent = popupTarget
+    ? students.find(row => row.studentIndex === popupTarget.studentIndex) ?? null
+    : null;
 
   // ── CA Component handlers ──────────────────────────────────────────────────
   /** Creates a blank component in the requested scoring group. */
@@ -651,13 +672,26 @@ export default function LecturerConsolePage() {
   };
 
   // ── Mark mutation helpers ──────────────────────────────────────────────────
-  const updateCAMark = (studentIdx: string, compId: string, q: string, val: number, maxMarks: number) =>
+  const saveComponentMarks = (
+    studentIdx: string,
+    compId: string,
+    marks: Record<string, number | null>
+  ) => {
+    const comp = caComponents.find(component => component.id === compId);
+    if (!comp) return;
+    const keys = componentQuestionKeys(comp);
+
     mutateStudents(prev => prev.map(row => {
-      if (row.studentIndex !== studentIdx) return row;
+      if (row.studentIndex !== studentIdx || row.isAbsentCa?.[compId]) return row;
       const compMarks = { ...(row.caQuestionsMarks[compId] ?? {}) };
-      compMarks[q] = clampMark(val, maxMarks);
+      keys.forEach(key => {
+        const value = marks[key];
+        if (value === null || value === undefined) delete compMarks[key];
+        else compMarks[key] = clampMark(value, componentQuestionMax(comp, key));
+      });
       return { ...row, caQuestionsMarks: { ...row.caQuestionsMarks, [compId]: compMarks } };
     }));
+  };
 
   const updateFinalMark = (studentIdx: string, q: string, val: number) =>
     mutateStudents(prev => prev.map(row => {
@@ -667,13 +701,18 @@ export default function LecturerConsolePage() {
       return { ...row, finalExamQuestionsMarks: fm };
     }));
 
-  const toggleAbsentCA = (studentIdx: string, compId: string) =>
+  /** Row-level CA absence applies to every currently selected CA component. */
+  const toggleRowAbsentCA = (studentIdx: string) =>
     mutateStudents(prev => prev.map(row => {
-      if (row.studentIndex !== studentIdx) return row;
-      const absent = !row.isAbsentCa[compId];
-      const nextAbsent = { ...row.isAbsentCa, [compId]: absent };
+      if (row.studentIndex !== studentIdx || caComponents.length === 0) return row;
+      const isAbsentAcrossAll = caComponents.every(comp => row.isAbsentCa?.[comp.id] === true);
+      const shouldMarkAbsent = !isAbsentAcrossAll;
+      const nextAbsent = { ...row.isAbsentCa };
       const nextMarks = { ...row.caQuestionsMarks };
-      if (absent) nextMarks[compId] = {};
+      caComponents.forEach(comp => {
+        nextAbsent[comp.id] = shouldMarkAbsent;
+        if (shouldMarkAbsent) nextMarks[comp.id] = {};
+      });
       return { ...row, isAbsentCa: nextAbsent, caQuestionsMarks: nextMarks };
     }));
 
@@ -725,43 +764,6 @@ export default function LecturerConsolePage() {
     if (event.key !== "Enter") return;
     event.preventDefault();
     focusCell(grid, column, rowIndex, event.shiftKey ? -1 : 1);
-  };
-
-  const handleCaPaste = (
-    event: React.ClipboardEvent<HTMLInputElement>,
-    comp: CaComponent,
-    startRowIndex: number,
-    startKey: string
-  ) => {
-    const grid = parseClipboardGrid(event.clipboardData.getData("text/plain"));
-    if (grid.length === 0) return;
-    event.preventDefault();
-
-    const keys = componentQuestionKeys(comp);
-    const startColumn = Math.max(0, keys.indexOf(startKey));
-
-    mutateStudents(prev => {
-      const next = [...prev];
-      grid.forEach((cells, rowOffset) => {
-        const target = startRowIndex + rowOffset;
-        if (target < 0 || target >= next.length) return;
-        const row = next[target];
-        if (row.isAbsentCa[comp.id]) return;
-        const compMarks = { ...(row.caQuestionsMarks[comp.id] ?? {}) };
-        cells.forEach((value, columnOffset) => {
-          const key = keys[startColumn + columnOffset];
-          if (!key || value === null) return;
-          compMarks[key] = clampMark(value, componentQuestionMax(comp, key));
-        });
-        next[target] = { ...row, caQuestionsMarks: { ...row.caQuestionsMarks, [comp.id]: compMarks } };
-      });
-      return next;
-    });
-
-    setFeedback({
-      type: "info",
-      text: `Pasted ${grid.length} row(s) into ${comp.name || caTypeLabel(comp.type)}. Review the values, then save.`,
-    });
   };
 
   const handleFinalPaste = (
@@ -2002,74 +2004,49 @@ export default function LecturerConsolePage() {
                           </div>
                         )}
 
-                        {caComponents.length > 0 && (() => {
-                          const groupOf = (comp: CaComponent) => comp.group ?? caGroupOf(comp.type);
-                          // One component occupies: its question columns + Tot + AB.
-                          const spanOf = (comp: CaComponent) => componentQuestionKeys(comp).length + 2;
-                          const spanA = caComponents.filter(c => groupOf(c) === "A").reduce((sum, c) => sum + spanOf(c), 0);
-                          const spanB = caComponents.filter(c => groupOf(c) === "B").reduce((sum, c) => sum + spanOf(c), 0);
+                        {registerComponents.length > 0 && (() => {
+                          const groupA = registerComponents.filter(comp => groupOfComponent(comp) === "A");
+                          const groupB = registerComponents.filter(comp => groupOfComponent(comp) === "B");
+                          const componentCount = registerComponents.length;
 
                           return (
-                            <div className="border border-neutral-200 rounded-xl overflow-auto">
-                              <table className="w-full text-xs text-left border-collapse">
+                            <div className="border border-neutral-200 rounded-xl overflow-x-auto">
+                              <table className="w-full min-w-[850px] text-xs text-left border-collapse">
                                 <thead>
-                                  {/* Level 1 — the two scoring groups */}
                                   <tr className="text-[10px] font-black uppercase tracking-wider border-b border-neutral-200">
-                                    <th rowSpan={3} className="px-4 py-2.5 bg-neutral-50 text-neutral-500 w-44">Student No</th>
-                                    {spanA > 0 && (
-                                      <th colSpan={spanA} className="px-3 py-1.5 text-center bg-violet-100/80 text-violet-700">
+                                    <th rowSpan={2} className="px-4 py-2.5 bg-neutral-50 text-neutral-500 w-44">Student No</th>
+                                    {groupA.length > 0 && (
+                                      <th colSpan={groupA.length} className="px-3 py-2 text-center bg-violet-100/80 text-violet-700">
                                         Group A · practical / performance · {groupWeightTotal("A")}%
                                       </th>
                                     )}
-                                    {spanB > 0 && (
-                                      <th colSpan={spanB} className="px-3 py-1.5 text-center bg-orange-100/80 text-orange-700">
+                                    {groupB.length > 0 && (
+                                      <th colSpan={groupB.length} className="px-3 py-2 text-center bg-orange-100/80 text-orange-700">
                                         Group B · written / discrete · {groupWeightTotal("B")}%
                                       </th>
                                     )}
-                                    <th rowSpan={3} className="px-3 py-2.5 text-center bg-indigo-50 text-indigo-700 border-l border-indigo-100 w-20">
-                                      CA Total
+                                    <th rowSpan={2} className="px-3 py-2.5 text-center bg-indigo-50 text-indigo-700 border-l border-indigo-100 w-24">
+                                      Total Marks
                                       <span className="block text-[9px] font-normal normal-case tracking-normal">out of {caWeightTotal}</span>
                                     </th>
-                                    <th rowSpan={3} className="px-2 py-2.5 text-center bg-neutral-50 text-neutral-500 w-16">Eligible</th>
-                                    <th rowSpan={3} className="px-2 py-2.5 text-center bg-neutral-50 text-neutral-500 w-20">Edit</th>
+                                    <th rowSpan={2} className="px-2 py-2.5 text-center bg-rose-50 text-rose-700 w-20">Absent</th>
+                                    <th rowSpan={2} className="px-2 py-2.5 text-center bg-neutral-50 text-neutral-500 w-20">Eligibility</th>
+                                    <th rowSpan={2} className="px-2 py-2.5 text-center bg-neutral-50 text-neutral-500 w-20">Action</th>
                                   </tr>
-                                  {/* Level 2 — components; clicking opens the drill-down */}
                                   <tr className="text-[10px] font-bold border-b border-neutral-200">
-                                    {caComponents.map((comp, compIndex) => {
-                                      const isGroupA = groupOf(comp) === "A";
+                                    {registerComponents.map((comp, compIndex) => {
+                                      const isGroupA = groupOfComponent(comp) === "A";
+                                      const name = comp.name?.trim() || `${caTypeLabel(comp.type)} component ${compIndex + 1}`;
                                       return (
                                         <th
                                           key={comp.id}
-                                          colSpan={spanOf(comp)}
-                                          className={`px-2 py-1.5 text-center ${isGroupA ? "bg-violet-50 text-violet-700" : "bg-orange-50 text-orange-700"}`}
+                                          className={`min-w-32 px-2 py-2 text-center ${isGroupA ? "bg-violet-50 text-violet-700" : "bg-orange-50 text-orange-700"}`}
                                         >
-                                          <button
-                                            onClick={() => setPopupCompId(comp.id)}
-                                            title={`Open the ${comp.name || caTypeLabel(comp.type)} blueprint & per-question entry grid`}
-                                            className="inline-flex items-center gap-1.5 hover:underline underline-offset-2 cursor-pointer"
-                                          >
-                                            <Maximize2 className="h-2.5 w-2.5" />
-                                            {comp.name || `${caTypeLabel(comp.type)} component ${compIndex + 1}`}
-                                          </button>
+                                          <span className="block font-black">{name}</span>
+                                          <span className="mt-0.5 block text-[9px] font-semibold text-neutral-400">
+                                            {isGroupA ? "Overall mark" : "Component total"} · max {componentMaxScore(comp)} · {Number(comp.weightage) || 0}%
+                                          </span>
                                         </th>
-                                      );
-                                    })}
-                                  </tr>
-                                  {/* Level 3 — questions, component total, absent */}
-                                  <tr className="text-[9px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200">
-                                    {caComponents.map(comp => {
-                                      const isGroupA = groupOf(comp) === "A";
-                                      return (
-                                        <React.Fragment key={comp.id}>
-                                          {componentQuestionKeys(comp).map(q => (
-                                            <th key={q} className={`px-1 py-1.5 text-center w-14 ${isGroupA ? "bg-violet-50/60" : "bg-orange-50/50"}`}>
-                                              {isGroupA ? "Mark" : q}
-                                              <span className="block text-[8px] font-normal">/{componentQuestionMax(comp, q)}</span>
-                                            </th>
-                                          ))}
-                                          <th className={`px-1 py-1.5 text-center w-14 ${isGroupA ? "bg-violet-50/60" : "bg-orange-50/50"}`}>Tot</th>
-                                          <th className="px-1 py-1.5 text-center w-10 bg-neutral-50">AB</th>
-                                        </React.Fragment>
                                       );
                                     })}
                                   </tr>
@@ -2077,8 +2054,13 @@ export default function LecturerConsolePage() {
                                 <tbody className="divide-y divide-neutral-100">
                                   {visibleStudents.map(({ row, index }) => {
                                     const eligible = isRowEligible(row);
-                                    const editable = !isReadOnly && editingRows.has(row.studentIndex);
+                                    const rowEditing = !isReadOnly && editingRows.has(row.studentIndex);
                                     const weighted = computeWeightedScores(row, caComponents, finalBlueprint);
+                                    const absentCount = registerComponents.reduce(
+                                      (count, comp) => count + (row.isAbsentCa?.[comp.id] === true ? 1 : 0),
+                                      0
+                                    );
+                                    const absentAcrossAll = absentCount === componentCount;
                                     const flagged = eligible && problemIndexes.has(row.studentIndex);
 
                                     return (
@@ -2087,7 +2069,7 @@ export default function LecturerConsolePage() {
                                         className={`transition-colors ${
                                           !eligible
                                             ? "bg-neutral-100/70 text-neutral-400"
-                                            : editable
+                                            : rowEditing
                                               ? "bg-indigo-50/40"
                                               : "hover:bg-neutral-50/40"
                                         }`}
@@ -2105,66 +2087,57 @@ export default function LecturerConsolePage() {
                                           )}
                                         </td>
 
-                                        {caComponents.map(comp => {
-                                          const isGroupA = groupOf(comp) === "A";
-                                          const keys = componentQuestionKeys(comp);
-                                          const isAbsent = !!row.isAbsentCa[comp.id];
-                                          const compMarks = row.caQuestionsMarks[comp.id] ?? {};
+                                        {registerComponents.map(comp => {
+                                          const isGroupA = groupOfComponent(comp) === "A";
+                                          const isAbsent = row.isAbsentCa?.[comp.id] === true;
+                                          const marks = row.caQuestionsMarks?.[comp.id] ?? {};
                                           const required = componentRequiredAnswers(comp);
-                                          const total = computeRowTotal(compMarks, required, comp.scoreMode);
-                                          const answered = enteredMarks(compMarks).length;
-                                          const short = eligible && !isAbsent && answered < required;
+                                          const answered = enteredMarks(marks).length;
+                                          const incomplete = eligible && !isAbsent && answered < required;
+                                          const total = computeRowTotal(marks, required, comp.scoreMode);
+                                          const max = componentMaxScore(comp);
+                                          const compName = comp.name?.trim() || caTypeLabel(comp.type);
 
                                           return (
-                                            <React.Fragment key={comp.id}>
-                                              {keys.map(q => (
-                                                <td key={q} className={`px-1 py-1.5 text-center ${short && compMarks[q] === undefined ? "bg-amber-50/60" : ""}`}>
-                                                  {isAbsent ? (
-                                                    <span className="text-neutral-400 font-bold text-[11px]">AB</span>
-                                                  ) : editable ? (
-                                                    <input
-                                                      type="number" min="0" max={componentQuestionMax(comp, q)}
-                                                      value={compMarks[q] ?? ""}
-                                                      placeholder="0"
-                                                      data-grid={`ca-${comp.id}`}
-                                                      data-col={q}
-                                                      data-row={index}
-                                                      aria-label={`${row.studentIndex} ${q}`}
-                                                      onChange={e => updateCAMark(row.studentIndex, comp.id, q, Number(e.target.value), componentQuestionMax(comp, q))}
-                                                      onKeyDown={e => handleCellKeyDown(e, `ca-${comp.id}`, q, index)}
-                                                      onPaste={e => handleCaPaste(e, comp, index, q)}
-                                                      className={`w-12 bg-white border rounded py-1 text-center font-bold focus:outline-none ${isGroupA ? "focus:border-violet-400" : "focus:border-orange-400"} ${short && compMarks[q] === undefined ? "border-amber-300" : "border-neutral-200"}`}
-                                                    />
-                                                  ) : (
-                                                    <span className="font-bold tabular-nums">
-                                                      {compMarks[q] ?? <span className="text-neutral-300 font-normal">—</span>}
-                                                    </span>
-                                                  )}
-                                                </td>
-                                              ))}
-                                              <td className="px-1 py-1.5 text-center font-extrabold text-indigo-600">
-                                                {isAbsent
-                                                  ? "AB"
-                                                  : answered === 0
-                                                    ? <span className="text-neutral-300 font-normal">—</span>
-                                                    : total.toFixed(1)}
-                                              </td>
-                                              <td className="px-1 py-1.5 text-center">
+                                            <td
+                                              key={comp.id}
+                                              className={`px-2 py-2 text-center ${incomplete ? "bg-amber-50/60" : ""} ${isAbsent ? "text-rose-600" : ""}`}
+                                            >
+                                              <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
+                                                <span className={`font-extrabold tabular-nums ${isGroupA ? "text-violet-800" : "text-orange-800"}`}>
+                                                  {isAbsent ? "AB" : answered === 0 ? <span className="text-neutral-300 font-normal">—</span> : total.toFixed(1)}
+                                                </span>
+                                                {!isAbsent && answered > 0 && (
+                                                  <span className="text-[9px] font-semibold text-neutral-400">/ {max}</span>
+                                                )}
                                                 <button
-                                                  disabled={isReadOnly}
-                                                  onClick={() => toggleAbsentCA(row.studentIndex, comp.id)}
-                                                  title={isAbsent ? "Mark present" : "Mark absent"}
-                                                  className={`px-1.5 py-0.5 text-[9px] font-extrabold rounded cursor-pointer disabled:opacity-40 ${isAbsent ? "bg-rose-600 text-white" : "bg-neutral-100 text-neutral-500 hover:bg-rose-50 hover:text-rose-600"}`}
+                                                  type="button"
+                                                  onClick={() => setPopupTarget({ compId: comp.id, studentIndex: row.studentIndex })}
+                                                  aria-label={`View ${compName} marks for ${row.studentIndex}`}
+                                                  title={`View ${row.studentIndex} · ${compName}`}
+                                                  className="h-7 w-7 rounded-lg border border-neutral-200 bg-white text-neutral-400 hover:border-indigo-200 hover:text-indigo-600 flex items-center justify-center cursor-pointer"
                                                 >
-                                                  AB
+                                                  <Eye className="h-3.5 w-3.5" />
                                                 </button>
-                                              </td>
-                                            </React.Fragment>
+                                              </div>
+                                            </td>
                                           );
                                         })}
 
                                         <td className="px-3 py-2.5 text-center font-extrabold text-indigo-700 bg-indigo-50/40 border-l border-indigo-100 tabular-nums">
                                           {!eligible ? <span className="text-neutral-300">—</span> : weighted.ca.toFixed(1)}
+                                        </td>
+                                        <td className="px-2 py-2.5 text-center">
+                                          <button
+                                            type="button"
+                                            disabled={isReadOnly || componentCount === 0}
+                                            onClick={() => toggleRowAbsentCA(row.studentIndex)}
+                                            aria-label={absentAcrossAll ? `Mark ${row.studentIndex} present for all CA components` : `Mark ${row.studentIndex} absent across all CA components`}
+                                            title={absentAcrossAll ? "Present across all CA components" : absentCount > 0 ? `Absent for ${absentCount} of ${componentCount} component(s); click to mark absent for all` : "Mark absent across all CA components"}
+                                            className={`min-w-10 rounded-md px-2 py-1 text-[10px] font-extrabold cursor-pointer disabled:opacity-40 ${absentAcrossAll ? "bg-rose-600 text-white" : absentCount > 0 ? "bg-rose-100 text-rose-700 hover:bg-rose-200" : "bg-neutral-100 text-neutral-500 hover:bg-rose-50 hover:text-rose-600"}`}
+                                          >
+                                            {absentAcrossAll ? "AB" : absentCount > 0 ? `${absentCount}/${componentCount}` : "AB"}
+                                          </button>
                                         </td>
                                         <td className="px-2 py-2.5 text-center">
                                           <input
@@ -2181,18 +2154,22 @@ export default function LecturerConsolePage() {
                                           {!isReadOnly ? (
                                             <div className="flex items-center justify-center gap-1">
                                               <button
+                                                type="button"
                                                 onClick={() => toggleRowEdit(row.studentIndex)}
-                                                title={editable ? `Done editing ${row.studentIndex}` : `Unlock ${row.studentIndex} for editing`}
-                                                className={`h-6 w-6 rounded flex items-center justify-center cursor-pointer transition-colors ${editable ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-neutral-100 text-neutral-500 hover:bg-indigo-100 hover:text-indigo-700"}`}
+                                                aria-label={rowEditing ? `Finish editing ${row.studentIndex}` : `Edit ${row.studentIndex}`}
+                                                title={rowEditing ? "Exit row edit mode" : "Open component dialogs in edit mode"}
+                                                className={`h-7 w-7 rounded flex items-center justify-center cursor-pointer transition-colors ${rowEditing ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-neutral-100 text-neutral-500 hover:bg-indigo-100 hover:text-indigo-700"}`}
                                               >
-                                                {editable ? <Check className="h-3 w-3" /> : <Pencil className="h-3 w-3" />}
+                                                {rowEditing ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
                                               </button>
                                               <button
+                                                type="button"
                                                 onClick={() => requestRemoveStudent(row)}
                                                 aria-label={`Remove ${row.studentIndex}`}
-                                                className="h-6 w-6 rounded flex items-center justify-center text-neutral-400 hover:text-rose-600 cursor-pointer"
+                                                title={`Delete ${row.studentIndex}`}
+                                                className="h-7 w-7 rounded flex items-center justify-center text-neutral-400 hover:text-rose-600 cursor-pointer"
                                               >
-                                                <Trash2 className="h-3 w-3" />
+                                                <Trash2 className="h-3.5 w-3.5" />
                                               </button>
                                             </div>
                                           ) : (
@@ -2204,7 +2181,7 @@ export default function LecturerConsolePage() {
                                   })}
                                   {visibleStudents.length === 0 && (
                                     <tr>
-                                      <td colSpan={spanA + spanB + 4} className="px-4 py-8 text-center text-neutral-400 italic">
+                                      <td colSpan={componentCount + 5} className="px-4 py-8 text-center text-neutral-400 italic">
                                         {searchTerm ? `No student matches “${searchTerm}”.` : "No students added yet."}
                                       </td>
                                     </tr>
@@ -2217,11 +2194,10 @@ export default function LecturerConsolePage() {
 
                         {!isReadOnly && caComponents.length > 0 && (
                           <p className="text-[10px] text-neutral-400">
-                            The register reads like a register: rows stay view-only until you click the pencil on a row, and
-                            the header button of a component opens its blueprint with the full per-question entry grid.
-                            Group A takes one overall mark per student; Group B caps every question at its own weightage.
-                            Untick <strong className="text-neutral-500">Eligible</strong> for students outside the cohort the HOD authorised —
-                            they drop out of totals, the audit, CSV and PDF.
+                            Each component cell has an eye button to view one student&apos;s marks; its pinned footer toggles Edit and Save.
+                            Group A shows one overall mark and Group B shows the question total. Row-level AB applies to every selected CA component.
+                            Untick <strong className="text-neutral-500">Eligibility</strong> for students outside the authorised cohort —
+                            they are excluded from totals, the audit and official exports.
                           </p>
                         )}
                       </div>
@@ -2560,15 +2536,24 @@ export default function LecturerConsolePage() {
         </div>
       </div>
 
-      {/* ── Component drill-down: blueprint + full per-question entry grid ──── */}
-      {popupComponent && (
+      {/* ── Per-student component view / marksheet ─────────────────────────── */}
+      {popupTarget && popupComponent && popupStudent && (
         <ComponentMarksDialog
+          key={`${popupTarget.studentIndex}:${popupTarget.compId}`}
           comp={popupComponent}
-          rows={visibleStudents}
+          row={popupStudent}
           isReadOnly={isReadOnly}
-          onMark={updateCAMark}
-          onToggleAbsent={toggleAbsentCA}
-          onClose={() => setPopupCompId(null)}
+          initiallyEditing={editingRows.has(popupTarget.studentIndex)}
+          onSave={(studentIndex, compId, marks) => {
+            saveComponentMarks(studentIndex, compId, marks);
+            setEditingRows(prev => {
+              if (!prev.has(studentIndex)) return prev;
+              const next = new Set(prev);
+              next.delete(studentIndex);
+              return next;
+            });
+          }}
+          onClose={() => setPopupTarget(null)}
         />
       )}
 
