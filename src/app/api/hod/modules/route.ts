@@ -22,6 +22,8 @@ export async function GET() {
       code: m.code,
       name: m.name,
       credits: m.credits,
+      eligibleStudents: m.eligibleStudents,
+      deadline: m.deadline,
       isFrozen: m.isFrozen,
       stats: m.stats,
       assignedActiveLec: m.activeLecturer
@@ -36,6 +38,77 @@ export async function GET() {
   } catch (error) {
     console.error("Error fetching modules:", error);
     return NextResponse.json({ error: "Failed to fetch modules" }, { status: 500 });
+  }
+}
+
+/**
+ * POST /api/hod/modules
+ * Create a module and assign its active lecturer.
+ */
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const code = typeof body.code === "string" ? body.code.trim().toUpperCase() : "";
+    const lecturerId = Number(body.lecturerId);
+    const eligibleStudents = Number(body.eligibleStudents);
+    const deadline = typeof body.deadline === "string" ? new Date(body.deadline) : null;
+    const allowedComponents = ["CONTINUOUS_ASSESSMENT", "PRACTICAL", "LAB_SESSIONS"];
+    const components: string[] = Array.isArray(body.components)
+      ? [...new Set((body.components as unknown[]).filter((component): component is string =>
+          typeof component === "string" && allowedComponents.includes(component)
+        ))]
+      : [];
+
+    if (!name || !code) {
+      return NextResponse.json({ error: "Module name and code are required" }, { status: 400 });
+    }
+    if (!Number.isInteger(lecturerId) || lecturerId <= 0) {
+      return NextResponse.json({ error: "Select a valid lecturer" }, { status: 400 });
+    }
+    if (!Number.isInteger(eligibleStudents) || eligibleStudents < 0) {
+      return NextResponse.json({ error: "Eligible students must be a non-negative whole number" }, { status: 400 });
+    }
+    if (!deadline || Number.isNaN(deadline.getTime())) {
+      return NextResponse.json({ error: "A valid deadline is required" }, { status: 400 });
+    }
+    if (!Array.isArray(body.components) || components.length !== body.components.length) {
+      return NextResponse.json({ error: "Select valid module components" }, { status: 400 });
+    }
+
+    const lecturer = await prisma.systemUser.findFirst({
+      where: { id: lecturerId, role: "LECTURER" },
+      select: { id: true },
+    });
+    if (!lecturer) {
+      return NextResponse.json({ error: "Lecturer not found" }, { status: 404 });
+    }
+
+    const createdModule = await prisma.module.create({
+      data: {
+        code,
+        name,
+        activeLecturer: { connect: { id: lecturerId } },
+        eligibleStudents,
+        deadline,
+        stats: { moduleComponents: components, caComponents: [], marksheetStatus: "DRAFT" },
+      },
+    });
+
+    return NextResponse.json({ success: true, module: createdModule }, { status: 201 });
+  } catch (error: unknown) {
+    const errorCode = typeof error === "object" && error !== null && "code" in error
+      ? error.code
+      : undefined;
+    if (errorCode === "P2002") {
+      return NextResponse.json({ error: "A module with this code already exists" }, { status: 409 });
+    }
+    console.error("Error creating module:", error);
+    const message = error instanceof Error ? error.message : "Unknown database error";
+    return NextResponse.json(
+      { error: process.env.NODE_ENV === "development" ? message : "Failed to create module" },
+      { status: 500 }
+    );
   }
 }
 

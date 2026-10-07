@@ -37,6 +37,8 @@ model Module {
   code             String       @unique
   name             String
   credits          Int          @default(3)
+  eligibleStudents Int          @default(0) @map("eligible_students")
+  deadline         DateTime?    @map("deadline")
   isFrozen         Boolean      @default(false) @map("is_frozen")
   activeLecturerId Int?         @map("active_lecturer_id")
   examLecturerId   Int?         @map("exam_lecturer_id")

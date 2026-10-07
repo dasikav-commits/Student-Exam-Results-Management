@@ -8,7 +8,7 @@ import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import {
   Users, BookOpen, Lock, Unlock, Loader2, Layers, TrendingUp, Shield,
   Edit3, X, GraduationCap, FileCheck, ChevronDown, AlertCircle, CheckCircle,
-  Clock, ClipboardList, Eye, Sliders, Flame, LogOut, RefreshCcw, User
+  Clock, ClipboardList, Eye, Sliders, Flame, LogOut, RefreshCcw, User, Plus
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -47,10 +47,13 @@ interface ModuleData {
   code: string;
   name: string;
   credits: number;
+  eligibleStudents: number;
+  deadline: string | null;
   isFrozen: boolean;
   assignedActiveLec?: { id: number; fullName: string } | null;
   assignedExamLec?: { id: number; fullName: string } | null;
   stats: {
+    moduleComponents?: string[];
     caComponents?: HodCaComponent[];
     finalBlueprint?: HodFinalBlueprint;
     caCompletionRate?: number;
@@ -140,6 +143,17 @@ export default function HodConsolePage() {
 
   // Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isAddModuleOpen, setIsAddModuleOpen] = useState(false);
+  const [isSavingModule, setIsSavingModule] = useState(false);
+  const [moduleFormError, setModuleFormError] = useState("");
+  const [newModule, setNewModule] = useState({
+    name: "",
+    code: "",
+    lecturerId: "",
+    components: [] as string[],
+    eligibleStudents: "",
+    deadline: "",
+  });
   const [selectedLecturer, setSelectedLecturer] = useState<LecturerData | null>(null);
   const [modalActiveCodes, setModalActiveCodes] = useState<string[]>([]);
   const [modalExamCodes, setModalExamCodes] = useState<string[]>([]);
@@ -234,6 +248,35 @@ export default function HodConsolePage() {
     setList: React.Dispatch<React.SetStateAction<string[]>>
   ) => {
     setList(list.includes(code) ? list.filter(c => c !== code) : [...list, code]);
+  };
+
+  const handleCreateModule = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsSavingModule(true);
+    setModuleFormError("");
+    try {
+      const res = await fetch("/api/hod/modules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...newModule,
+          eligibleStudents: Number(newModule.eligibleStudents),
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        setModuleFormError(result.error ?? "Failed to create module");
+        return;
+      }
+
+      setIsAddModuleOpen(false);
+      setNewModule({ name: "", code: "", lecturerId: "", components: [], eligibleStudents: "", deadline: "" });
+      await refreshData();
+    } catch {
+      setModuleFormError("Unable to save module. Check your connection and try again.");
+    } finally {
+      setIsSavingModule(false);
+    }
   };
 
   // ── Results viewer ─────────────────────────────────────────────────────────
@@ -406,8 +449,16 @@ export default function HodConsolePage() {
         ══════════════════════════════════════════════════════════════════════ */}
         {activeTab === "modules" && (
           <div className="bg-white rounded-2xl premium-border overflow-hidden">
-            <div className="p-4 border-b border-neutral-200 bg-neutral-50/60 text-xs font-bold uppercase tracking-wider text-neutral-500">
-              Department Module Manifest ({modules.length} modules)
+            <div className="p-4 border-b border-neutral-200 bg-neutral-50/60 flex items-center justify-between gap-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-neutral-500">
+                Department Module Manifest ({modules.length} modules)
+              </span>
+              <button
+                onClick={() => { setModuleFormError(""); setIsAddModuleOpen(true); }}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1a1a1a] text-white text-xs font-bold hover:bg-neutral-800 cursor-pointer"
+              >
+                <span className="text-base leading-none">+</span>Add module
+              </button>
             </div>
             <div className="overflow-auto">
               <table className="w-full text-xs text-left border-collapse">
@@ -415,6 +466,9 @@ export default function HodConsolePage() {
                   <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200">
                     <th className="px-5 py-3">Module</th>
                     <th className="px-5 py-3">Active Lecturer</th>
+                    <th className="px-5 py-3">Components</th>
+                    <th className="px-5 py-3 text-center">Eligibility Level</th>
+                    <th className="px-5 py-3">Deadline</th>
                     <th className="px-5 py-3">Examiner</th>
                     <th className="px-5 py-3 text-center">CA Components</th>
                     <th className="px-5 py-3 text-center">Exam</th>
@@ -432,6 +486,20 @@ export default function HodConsolePage() {
                       </td>
                       <td className="px-5 py-4 font-semibold">
                         {mod.assignedActiveLec?.fullName ?? <span className="text-neutral-300 italic text-[11px]">Unassigned</span>}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex flex-wrap gap-1">
+                          {(mod.stats?.moduleComponents ?? []).map(component => (
+                            <span key={component} className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700">
+                              {component === "CONTINUOUS_ASSESSMENT" ? "Continuous Assessment" : component === "LAB_SESSIONS" ? "Lab Sessions" : "Practical"}
+                            </span>
+                          ))}
+                          {(mod.stats?.moduleComponents ?? []).length === 0 && <span className="text-neutral-300">—</span>}
+                        </div>
+                      </td>
+                      <td className="px-5 py-4 text-center font-semibold tabular-nums">{mod.eligibleStudents}</td>
+                      <td className="px-5 py-4 whitespace-nowrap">
+                        {mod.deadline ? new Date(mod.deadline).toLocaleDateString() : <span className="text-neutral-300">—</span>}
                       </td>
                       <td className="px-5 py-4 font-semibold">
                         {mod.assignedExamLec?.fullName ?? <span className="text-neutral-300 italic text-[11px]">Unassigned</span>}
@@ -461,7 +529,7 @@ export default function HodConsolePage() {
                     </tr>
                   ))}
                   {modules.length === 0 && (
-                    <tr><td colSpan={7} className="px-5 py-10 text-center text-neutral-400 italic">No modules found.</td></tr>
+                    <tr><td colSpan={10} className="px-5 py-10 text-center text-neutral-400 italic">No modules found.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -596,6 +664,93 @@ export default function HodConsolePage() {
           </div>
         )}
       </div>
+
+      {isAddModuleOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <form onSubmit={handleCreateModule} className="bg-white w-full max-w-2xl rounded-xl shadow-2xl border border-neutral-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-5 border-b border-neutral-100 bg-neutral-50 flex justify-between items-center">
+              <div>
+                <h3 className="font-bold text-sm">Add Department Module</h3>
+                <p className="text-xs text-neutral-400 mt-0.5">Create a module and assign its lecturer.</p>
+              </div>
+              <button type="button" onClick={() => setIsAddModuleOpen(false)} aria-label="Close" className="w-8 h-8 border border-neutral-200 flex items-center justify-center hover:bg-neutral-100 cursor-pointer">
+                <X className="h-4 w-4 text-neutral-500" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label className="space-y-1.5">
+                  <span className="text-xs font-bold text-neutral-600">Module name</span>
+                  <input required maxLength={120} value={newModule.name} onChange={event => setNewModule(current => ({ ...current, name: event.target.value }))} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-500" />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-bold text-neutral-600">Module code</span>
+                  <input required maxLength={30} value={newModule.code} onChange={event => setNewModule(current => ({ ...current, code: event.target.value.toUpperCase() }))} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm uppercase focus:outline-none focus:border-neutral-500" />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-bold text-neutral-600">Lecturer</span>
+                  <select required value={newModule.lecturerId} onChange={event => setNewModule(current => ({ ...current, lecturerId: event.target.value }))} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:border-neutral-500">
+                    <option value="">Select lecturer</option>
+                    {lecturers.map(lecturer => <option key={lecturer.id} value={lecturer.id}>{lecturer.fullName}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-bold text-neutral-600">Eligibility Level</span>
+                  <input required type="number" min="0" step="1" value={newModule.eligibleStudents} onChange={event => setNewModule(current => ({ ...current, eligibleStudents: event.target.value }))} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-500" />
+                </label>
+                <label className="space-y-1.5 sm:col-span-2">
+                  <span className="text-xs font-bold text-neutral-600">Deadline</span>
+                  <input required type="date" value={newModule.deadline} onChange={event => setNewModule(current => ({ ...current, deadline: event.target.value }))} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-500" />
+                </label>
+              </div>
+
+              <fieldset>
+                <legend className="text-xs font-bold text-neutral-600 mb-2">Components</legend>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {[
+                    { value: "CONTINUOUS_ASSESSMENT", label: "Continuous Assessments" },
+                    { value: "PRACTICAL", label: "Practical" },
+                    { value: "LAB_SESSIONS", label: "Lab Sessions" },
+                  ].map(component => {
+                    const selected = newModule.components.includes(component.value);
+                    return (
+                      <label key={component.value} className={`flex items-center gap-2.5 p-3 border rounded-lg text-xs font-semibold cursor-pointer ${selected ? "border-emerald-500 bg-emerald-50/60 text-emerald-800" : "border-neutral-200 text-neutral-600 hover:bg-neutral-50"}`}>
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => setNewModule(current => ({
+                            ...current,
+                            components: selected
+                              ? current.components.filter(value => value !== component.value)
+                              : [...current.components, component.value],
+                          }))}
+                          className="accent-emerald-600"
+                        />
+                        {component.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+
+              {moduleFormError && (
+                <p role="alert" className="flex items-center gap-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-100 rounded-lg p-3">
+                  <AlertCircle className="h-4 w-4 shrink-0" />{moduleFormError}
+                </p>
+              )}
+            </div>
+
+            <div className="p-5 border-t border-neutral-100 bg-neutral-50 flex justify-end gap-3">
+              <button type="button" onClick={() => setIsAddModuleOpen(false)} className="h-9 px-4 text-xs font-bold rounded-lg border border-neutral-300 text-neutral-700 bg-white hover:bg-neutral-50 cursor-pointer">Cancel</button>
+              <button type="submit" disabled={isSavingModule} className="h-9 px-5 text-xs font-bold rounded-lg bg-[#1a1a1a] text-white hover:bg-neutral-800 disabled:opacity-50 cursor-pointer flex items-center gap-2">
+                {isSavingModule ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                Save module
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* ── Assignment Modal ──────────────────────────────────────────────────── */}
       {isModalOpen && selectedLecturer && (
