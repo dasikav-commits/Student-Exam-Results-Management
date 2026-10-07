@@ -66,6 +66,11 @@ model StudentMark {
   // { "comp_uuid": true }
   isAbsentCa              Json    @default("{}") @map("is_absent_ca")
   isAbsentFinal           Boolean @default(false) @map("is_absent_final")
+  // Cohort eligibility. The HOD authorises the cohort size when the module is
+  // created (modules.eligible_students), so every roster row starts eligible;
+  // the Active Lecturer unticks students who fall outside it. Ineligible rows
+  // are excluded from completeness audits, totals, CSV and PDF exports.
+  isEligible              Boolean @default(true) @map("is_eligible")
 
   module Module @relation(fields: [moduleCode], references: [code], onDelete: Cascade)
 
