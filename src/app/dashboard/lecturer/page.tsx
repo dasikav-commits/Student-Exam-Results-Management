@@ -701,19 +701,17 @@ export default function LecturerConsolePage() {
       return { ...row, finalExamQuestionsMarks: fm };
     }));
 
-  /** Row-level CA absence applies to every currently selected CA component. */
-  const toggleRowAbsentCA = (studentIdx: string) =>
+  /** Toggle absence for one CA component without discarding its entered marks. */
+  const toggleComponentAbsent = (studentIdx: string, compId: string) =>
     mutateStudents(prev => prev.map(row => {
-      if (row.studentIndex !== studentIdx || caComponents.length === 0) return row;
-      const isAbsentAcrossAll = caComponents.every(comp => row.isAbsentCa?.[comp.id] === true);
-      const shouldMarkAbsent = !isAbsentAcrossAll;
-      const nextAbsent = { ...row.isAbsentCa };
-      const nextMarks = { ...row.caQuestionsMarks };
-      caComponents.forEach(comp => {
-        nextAbsent[comp.id] = shouldMarkAbsent;
-        if (shouldMarkAbsent) nextMarks[comp.id] = {};
-      });
-      return { ...row, isAbsentCa: nextAbsent, caQuestionsMarks: nextMarks };
+      if (row.studentIndex !== studentIdx) return row;
+      return {
+        ...row,
+        isAbsentCa: {
+          ...row.isAbsentCa,
+          [compId]: row.isAbsentCa?.[compId] !== true,
+        },
+      };
     }));
 
   const toggleAbsentFinal = (studentIdx: string) =>
@@ -2007,43 +2005,41 @@ export default function LecturerConsolePage() {
                         {registerComponents.length > 0 && (() => {
                           const groupA = registerComponents.filter(comp => groupOfComponent(comp) === "A");
                           const groupB = registerComponents.filter(comp => groupOfComponent(comp) === "B");
-                          const componentCount = registerComponents.length;
 
                           return (
                             <div className="border border-neutral-200 rounded-xl overflow-x-auto">
-                              <table className="w-full min-w-[850px] text-xs text-left border-collapse">
+                              <table className="w-full min-w-[960px] text-sm text-left border-collapse">
                                 <thead>
-                                  <tr className="text-[10px] font-black uppercase tracking-wider border-b border-neutral-200">
-                                    <th rowSpan={2} className="px-4 py-2.5 bg-neutral-50 text-neutral-500 w-44">Student No</th>
+                                  <tr className="text-xs font-black uppercase tracking-wider border-b border-neutral-200">
+                                    <th rowSpan={2} className="px-4 py-3 bg-neutral-50 text-neutral-700 w-44">Student No</th>
                                     {groupA.length > 0 && (
-                                      <th colSpan={groupA.length} className="px-3 py-2 text-center bg-violet-100/80 text-violet-700">
+                                      <th colSpan={groupA.length} className="px-3 py-3 text-center bg-violet-100 text-violet-800">
                                         Group A · practical / performance · {groupWeightTotal("A")}%
                                       </th>
                                     )}
                                     {groupB.length > 0 && (
-                                      <th colSpan={groupB.length} className="px-3 py-2 text-center bg-orange-100/80 text-orange-700">
+                                      <th colSpan={groupB.length} className="px-3 py-3 text-center bg-orange-100 text-orange-800">
                                         Group B · written / discrete · {groupWeightTotal("B")}%
                                       </th>
                                     )}
-                                    <th rowSpan={2} className="px-3 py-2.5 text-center bg-indigo-50 text-indigo-700 border-l border-indigo-100 w-24">
+                                    <th rowSpan={2} className="px-3 py-3 text-center bg-indigo-50 text-indigo-800 border-l border-indigo-100 w-28">
                                       Total Marks
-                                      <span className="block text-[9px] font-normal normal-case tracking-normal">out of {caWeightTotal}</span>
+                                      <span className="block text-[11px] font-semibold normal-case tracking-normal text-indigo-700">out of {caWeightTotal}</span>
                                     </th>
-                                    <th rowSpan={2} className="px-2 py-2.5 text-center bg-rose-50 text-rose-700 w-20">Absent</th>
-                                    <th rowSpan={2} className="px-2 py-2.5 text-center bg-neutral-50 text-neutral-500 w-20">Eligibility</th>
-                                    <th rowSpan={2} className="px-2 py-2.5 text-center bg-neutral-50 text-neutral-500 w-20">Action</th>
+                                    <th rowSpan={2} className="px-2 py-3 text-center bg-neutral-50 text-neutral-700 w-24">Eligibility</th>
+                                    <th rowSpan={2} className="px-2 py-3 text-center bg-neutral-50 text-neutral-700 w-24">Action</th>
                                   </tr>
-                                  <tr className="text-[10px] font-bold border-b border-neutral-200">
+                                  <tr className="text-xs font-bold border-b border-neutral-200">
                                     {registerComponents.map((comp, compIndex) => {
                                       const isGroupA = groupOfComponent(comp) === "A";
                                       const name = comp.name?.trim() || `${caTypeLabel(comp.type)} component ${compIndex + 1}`;
                                       return (
                                         <th
                                           key={comp.id}
-                                          className={`min-w-32 px-2 py-2 text-center ${isGroupA ? "bg-violet-50 text-violet-700" : "bg-orange-50 text-orange-700"}`}
+                                          className={`min-w-32 px-2 py-3 text-center ${isGroupA ? "bg-violet-50 text-violet-800" : "bg-orange-50 text-orange-800"}`}
                                         >
                                           <span className="block font-black">{name}</span>
-                                          <span className="mt-0.5 block text-[9px] font-semibold text-neutral-400">
+                                          <span className="mt-1 block text-[11px] font-semibold text-neutral-600">
                                             {isGroupA ? "Overall mark" : "Component total"} · max {componentMaxScore(comp)} · {Number(comp.weightage) || 0}%
                                           </span>
                                         </th>
@@ -2056,11 +2052,6 @@ export default function LecturerConsolePage() {
                                     const eligible = isRowEligible(row);
                                     const rowEditing = !isReadOnly && editingRows.has(row.studentIndex);
                                     const weighted = computeWeightedScores(row, caComponents, finalBlueprint);
-                                    const absentCount = registerComponents.reduce(
-                                      (count, comp) => count + (row.isAbsentCa?.[comp.id] === true ? 1 : 0),
-                                      0
-                                    );
-                                    const absentAcrossAll = absentCount === componentCount;
                                     const flagged = eligible && problemIndexes.has(row.studentIndex);
 
                                     return (
@@ -2068,20 +2059,20 @@ export default function LecturerConsolePage() {
                                         key={row.studentIndex}
                                         className={`transition-colors ${
                                           !eligible
-                                            ? "bg-neutral-100/70 text-neutral-400"
+                                            ? "bg-neutral-100 text-neutral-600"
                                             : rowEditing
                                               ? "bg-indigo-50/40"
                                               : "hover:bg-neutral-50/40"
                                         }`}
                                       >
                                         <td className="px-4 py-2.5 whitespace-nowrap">
-                                          <span className="text-neutral-400 font-bold mr-1.5">{index + 1}</span>
-                                          <span className="font-bold tracking-wider uppercase">{row.studentIndex}</span>
+                                          <span className="text-neutral-600 font-bold mr-1.5">{index + 1}</span>
+                                          <span className="font-bold tracking-wider uppercase text-neutral-900">{row.studentIndex}</span>
                                           {flagged && (
                                             <span title="This row still has marksheet issues" className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle" />
                                           )}
                                           {!eligible && (
-                                            <span className="ml-2 text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-neutral-200 text-neutral-500">
+                                            <span className="ml-2 text-[11px] font-black uppercase tracking-wider px-2 py-1 rounded-full bg-neutral-200 text-neutral-700">
                                               Ineligible
                                             </span>
                                           )}
@@ -2101,45 +2092,58 @@ export default function LecturerConsolePage() {
                                           return (
                                             <td
                                               key={comp.id}
-                                              className={`px-2 py-2 text-center ${incomplete ? "bg-amber-50/60" : ""} ${isAbsent ? "text-rose-600" : ""}`}
+                                              className={`px-2 py-3 text-center ${incomplete ? "bg-amber-50" : ""} ${isAbsent ? "bg-rose-50/70" : ""}`}
                                             >
                                               <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
-                                                <span className={`font-extrabold tabular-nums ${isGroupA ? "text-violet-800" : "text-orange-800"}`}>
-                                                  {isAbsent ? "AB" : answered === 0 ? <span className="text-neutral-300 font-normal">—</span> : total.toFixed(1)}
-                                                </span>
-                                                {!isAbsent && answered > 0 && (
-                                                  <span className="text-[9px] font-semibold text-neutral-400">/ {max}</span>
+                                                {isAbsent ? (
+                                                  <button
+                                                    type="button"
+                                                    disabled={isReadOnly}
+                                                    onClick={() => toggleComponentAbsent(row.studentIndex, comp.id)}
+                                                    aria-label={`Mark ${row.studentIndex} present for ${compName}`}
+                                                    title={`Clear absence for ${compName}`}
+                                                    className="min-w-10 rounded-md border border-rose-700 bg-rose-600 px-2 py-1 text-xs font-extrabold text-white hover:bg-rose-700 cursor-pointer disabled:opacity-50"
+                                                  >
+                                                    AB
+                                                  </button>
+                                                ) : (
+                                                  <>
+                                                    <span className={`font-extrabold tabular-nums ${isGroupA ? "text-violet-900" : "text-orange-900"}`}>
+                                                      {answered === 0 ? <span className="text-neutral-500 font-normal">—</span> : total.toFixed(1)}
+                                                    </span>
+                                                    {answered > 0 && (
+                                                      <span className="text-[11px] font-semibold text-neutral-600">/ {max}</span>
+                                                    )}
+                                                    <button
+                                                      type="button"
+                                                      disabled={isReadOnly}
+                                                      onClick={() => toggleComponentAbsent(row.studentIndex, comp.id)}
+                                                      aria-label={`Mark ${row.studentIndex} absent for ${compName}`}
+                                                      title={`Mark absent for ${compName}`}
+                                                      className="min-w-10 rounded-md border border-rose-300 bg-white px-2 py-1 text-xs font-extrabold text-rose-800 hover:bg-rose-50 cursor-pointer disabled:opacity-50"
+                                                    >
+                                                      AB
+                                                    </button>
+                                                  </>
                                                 )}
                                                 <button
                                                   type="button"
                                                   onClick={() => setPopupTarget({ compId: comp.id, studentIndex: row.studentIndex })}
                                                   aria-label={`View ${compName} marks for ${row.studentIndex}`}
                                                   title={`View ${row.studentIndex} · ${compName}`}
-                                                  className="h-7 w-7 rounded-lg border border-neutral-200 bg-white text-neutral-400 hover:border-indigo-200 hover:text-indigo-600 flex items-center justify-center cursor-pointer"
+                                                  className="h-8 w-8 rounded-lg border border-neutral-300 bg-white text-neutral-600 hover:border-indigo-300 hover:text-indigo-700 flex items-center justify-center cursor-pointer"
                                                 >
-                                                  <Eye className="h-3.5 w-3.5" />
+                                                  <Eye className="h-4 w-4" />
                                                 </button>
                                               </div>
                                             </td>
                                           );
                                         })}
 
-                                        <td className="px-3 py-2.5 text-center font-extrabold text-indigo-700 bg-indigo-50/40 border-l border-indigo-100 tabular-nums">
-                                          {!eligible ? <span className="text-neutral-300">—</span> : weighted.ca.toFixed(1)}
+                                        <td className="px-3 py-3 text-center font-extrabold text-indigo-800 bg-indigo-50/60 border-l border-indigo-100 tabular-nums">
+                                          {!eligible ? <span className="text-neutral-500">—</span> : weighted.ca.toFixed(1)}
                                         </td>
-                                        <td className="px-2 py-2.5 text-center">
-                                          <button
-                                            type="button"
-                                            disabled={isReadOnly || componentCount === 0}
-                                            onClick={() => toggleRowAbsentCA(row.studentIndex)}
-                                            aria-label={absentAcrossAll ? `Mark ${row.studentIndex} present for all CA components` : `Mark ${row.studentIndex} absent across all CA components`}
-                                            title={absentAcrossAll ? "Present across all CA components" : absentCount > 0 ? `Absent for ${absentCount} of ${componentCount} component(s); click to mark absent for all` : "Mark absent across all CA components"}
-                                            className={`min-w-10 rounded-md px-2 py-1 text-[10px] font-extrabold cursor-pointer disabled:opacity-40 ${absentAcrossAll ? "bg-rose-600 text-white" : absentCount > 0 ? "bg-rose-100 text-rose-700 hover:bg-rose-200" : "bg-neutral-100 text-neutral-500 hover:bg-rose-50 hover:text-rose-600"}`}
-                                          >
-                                            {absentAcrossAll ? "AB" : absentCount > 0 ? `${absentCount}/${componentCount}` : "AB"}
-                                          </button>
-                                        </td>
-                                        <td className="px-2 py-2.5 text-center">
+                                        <td className="px-2 py-3 text-center">
                                           <input
                                             type="checkbox"
                                             checked={eligible}
@@ -2150,30 +2154,30 @@ export default function LecturerConsolePage() {
                                             className="h-3.5 w-3.5 accent-emerald-600 cursor-pointer disabled:opacity-40"
                                           />
                                         </td>
-                                        <td className="px-2 py-2.5 text-center">
+                                        <td className="px-2 py-3 text-center">
                                           {!isReadOnly ? (
-                                            <div className="flex items-center justify-center gap-1">
+                                            <div className="flex items-center justify-center gap-1.5">
                                               <button
                                                 type="button"
                                                 onClick={() => toggleRowEdit(row.studentIndex)}
                                                 aria-label={rowEditing ? `Finish editing ${row.studentIndex}` : `Edit ${row.studentIndex}`}
                                                 title={rowEditing ? "Exit row edit mode" : "Open component dialogs in edit mode"}
-                                                className={`h-7 w-7 rounded flex items-center justify-center cursor-pointer transition-colors ${rowEditing ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-neutral-100 text-neutral-500 hover:bg-indigo-100 hover:text-indigo-700"}`}
+                                                className={`h-8 w-8 rounded-lg flex items-center justify-center cursor-pointer transition-colors ${rowEditing ? "bg-emerald-700 text-white hover:bg-emerald-800" : "bg-neutral-200 text-neutral-700 hover:bg-indigo-100 hover:text-indigo-800"}`}
                                               >
-                                                {rowEditing ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
+                                                {rowEditing ? <Check className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
                                               </button>
                                               <button
                                                 type="button"
                                                 onClick={() => requestRemoveStudent(row)}
                                                 aria-label={`Remove ${row.studentIndex}`}
                                                 title={`Delete ${row.studentIndex}`}
-                                                className="h-7 w-7 rounded flex items-center justify-center text-neutral-400 hover:text-rose-600 cursor-pointer"
+                                                className="h-8 w-8 rounded-lg flex items-center justify-center text-neutral-600 hover:bg-rose-50 hover:text-rose-700 cursor-pointer"
                                               >
-                                                <Trash2 className="h-3.5 w-3.5" />
+                                                <Trash2 className="h-4 w-4" />
                                               </button>
                                             </div>
                                           ) : (
-                                            <span className="text-neutral-300">—</span>
+                                            <span className="text-neutral-500">—</span>
                                           )}
                                         </td>
                                       </tr>
@@ -2181,7 +2185,7 @@ export default function LecturerConsolePage() {
                                   })}
                                   {visibleStudents.length === 0 && (
                                     <tr>
-                                      <td colSpan={componentCount + 5} className="px-4 py-8 text-center text-neutral-400 italic">
+                                      <td colSpan={registerComponents.length + 4} className="px-4 py-8 text-center text-sm text-neutral-600 italic">
                                         {searchTerm ? `No student matches “${searchTerm}”.` : "No students added yet."}
                                       </td>
                                     </tr>
@@ -2193,10 +2197,10 @@ export default function LecturerConsolePage() {
                         })()}
 
                         {!isReadOnly && caComponents.length > 0 && (
-                          <p className="text-[10px] text-neutral-400">
-                            Each component cell has an eye button to view one student&apos;s marks; its pinned footer toggles Edit and Save.
-                            Group A shows one overall mark and Group B shows the question total. Row-level AB applies to every selected CA component.
-                            Untick <strong className="text-neutral-500">Eligibility</strong> for students outside the authorised cohort —
+                          <p className="text-xs text-neutral-600">
+                            Each component cell has an AB toggle and an eye button to view one student&apos;s marks; its pinned footer toggles Edit and Save.
+                            Group A shows one overall mark and Group B shows the question total. Component absence does not erase saved marks.
+                            Untick <strong className="text-neutral-700">Eligibility</strong> for students outside the authorised cohort —
                             they are excluded from totals, the audit and official exports.
                           </p>
                         )}

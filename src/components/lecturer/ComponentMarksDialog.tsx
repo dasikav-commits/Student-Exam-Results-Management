@@ -36,8 +36,8 @@ function Chip({ icon: Icon, label, value, tone }: {
   } as const;
 
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-bold ${tones[tone]}`}>
-      <Icon className="h-3 w-3" />
+    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold ${tones[tone]}`}>
+      <Icon className="h-3.5 w-3.5" />
       {label}
       <span className="font-black">{value}</span>
     </span>
@@ -127,18 +127,18 @@ export function ComponentMarksDialog({
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="font-black text-sm text-neutral-800">{row.studentIndex}</h2>
-              <span className="text-neutral-300">/</span>
-              <h3 className="font-black text-sm text-neutral-800">{name}</h3>
-              <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${isGroupA ? "bg-violet-100 text-violet-700 border-violet-200" : "bg-orange-100 text-orange-700 border-orange-200"}`}>
+              <h2 className="font-black text-base text-neutral-900">{row.studentIndex}</h2>
+              <span className="text-neutral-400">/</span>
+              <h3 className="font-black text-base text-neutral-900">{name}</h3>
+              <span className={`text-xs font-black px-2 py-0.5 rounded-full border ${isGroupA ? "bg-violet-100 text-violet-800 border-violet-300" : "bg-orange-100 text-orange-800 border-orange-300"}`}>
                 GROUP {group}
               </span>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">{caTypeLabel(comp.type)}</span>
+              <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-600">{caTypeLabel(comp.type)}</span>
             </div>
-            <p className="text-[11px] text-neutral-500 mt-1">
+            <p className="text-sm text-neutral-700 mt-1">
               {isGroupA
                 ? "One overall mark for this practical or performance component."
-                : "Enter each question mark, or use the quick buttons for full weightage or zero."}
+                : "Enter each question mark, or use the quick buttons for full marks or zero."}
             </p>
           </div>
           <button
@@ -162,8 +162,8 @@ export function ComponentMarksDialog({
         </div>
 
         {isAbsent && (
-          <div className="shrink-0 mx-5 mt-4 px-3 py-2 rounded-lg border border-rose-200 bg-rose-50 text-[11px] font-semibold text-rose-700">
-            This component is marked absent. Use the register&apos;s row-level Absent control to change the student&apos;s CA attendance.
+          <div className="shrink-0 mx-5 mt-4 px-3 py-2.5 rounded-lg border border-rose-300 bg-rose-50 text-sm font-semibold text-rose-800">
+            This component is marked absent. Use its AB control in the register to change this component&apos;s attendance status.
           </div>
         )}
 
@@ -172,11 +172,11 @@ export function ComponentMarksDialog({
             <div className={`w-full max-w-md rounded-2xl border p-5 sm:p-6 ${isAbsent ? "border-rose-200 bg-rose-50/50" : "border-violet-200 bg-violet-50/60"}`}>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-neutral-500">Overall mark</p>
-                  <p className="text-xs text-neutral-500 mt-1">Out of {componentQuestionMax(comp, "Q1")} marks</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-neutral-700">Overall mark</p>
+                  <p className="text-sm text-neutral-600 mt-1">Out of {componentQuestionMax(comp, "Q1")} marks</p>
                 </div>
                 {!isAbsent && (
-                  <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${isComplete ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-black ${isComplete ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
                     {isComplete ? "Entered" : "Not entered"}
                   </span>
                 )}
@@ -198,24 +198,6 @@ export function ComponentMarksDialog({
                     onChange={event => handleInput("Q1", event.target.value)}
                     className="min-w-0 flex-1 rounded-xl border border-violet-200 bg-white px-3 py-2.5 text-lg font-black tabular-nums focus:border-violet-500 focus:outline-none"
                   />
-                  <button
-                    type="button"
-                    title="Set full marks"
-                    aria-label="Set full marks"
-                    onClick={() => setMark("Q1", componentQuestionMax(comp, "Q1"))}
-                    className="h-10 w-10 rounded-xl bg-emerald-100 text-emerald-700 hover:bg-emerald-200 flex items-center justify-center cursor-pointer"
-                  >
-                    <Check className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    title="Set zero"
-                    aria-label="Set zero"
-                    onClick={() => setMark("Q1", 0)}
-                    className="h-10 w-10 rounded-xl bg-rose-100 text-rose-700 hover:bg-rose-200 flex items-center justify-center cursor-pointer"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
                 </div>
               ) : (
                 <p className="mt-4 text-4xl font-black tracking-tight text-violet-800 tabular-nums">
@@ -226,8 +208,8 @@ export function ComponentMarksDialog({
             </div>
           </div>
         ) : (
-          <div className="shrink-0 px-5 pt-4 pb-2 flex items-center justify-between gap-3 text-[11px] text-neutral-500">
-            <span>Five questions per row · tick for full marks · cross for zero · type a partial mark.</span>
+          <div className="shrink-0 px-5 pt-4 pb-2 flex items-center justify-between gap-3 text-xs text-neutral-700">
+            <span>{keys.length} question(s) · use the quick buttons for full marks or zero, or type a partial mark.</span>
             <span className="shrink-0 font-bold tabular-nums">{countedAnswers}/{required} counted</span>
           </div>
         )}
@@ -244,8 +226,8 @@ export function ComponentMarksDialog({
                     className={`min-w-0 rounded-xl border px-2.5 py-2 ${isAbsent ? "border-rose-100 bg-rose-50/40" : "border-orange-100 bg-orange-50/40"}`}
                   >
                     <div className="mb-1.5 flex items-center justify-between gap-1">
-                      <span className="text-[10px] font-black uppercase tracking-wider text-neutral-500">{key}</span>
-                      <span className="text-[9px] font-bold tabular-nums text-neutral-400">/{max}</span>
+                      <span className="text-xs font-black uppercase tracking-wider text-neutral-700">{key}</span>
+                      <span className="text-[11px] font-bold tabular-nums text-neutral-600">/{max}</span>
                     </div>
                     {isAbsent ? (
                       <div className="h-8 flex items-center text-sm font-black text-rose-600">AB</div>
@@ -260,7 +242,7 @@ export function ComponentMarksDialog({
                           placeholder="—"
                           aria-label={`${row.studentIndex} ${key} out of ${max}`}
                           onChange={event => handleInput(key, event.target.value)}
-                          className="h-8 min-w-0 w-full flex-1 rounded-md border border-neutral-200 bg-white px-1.5 text-center text-xs font-black tabular-nums focus:border-orange-400 focus:outline-none"
+                          className="h-8 min-w-0 w-full flex-1 rounded-md border border-neutral-200 bg-white px-1.5 text-center text-sm font-black tabular-nums focus:border-orange-400 focus:outline-none"
                         />
                         <button
                           type="button"
@@ -291,19 +273,19 @@ export function ComponentMarksDialog({
               })}
             </div>
             {keys.length === 0 && (
-              <p className="py-8 text-center text-sm italic text-neutral-400">No questions are configured for this component.</p>
+              <p className="py-8 text-center text-sm italic text-neutral-600">No questions are configured for this component.</p>
             )}
           </div>
         )}
 
         <footer className="shrink-0 border-t border-neutral-200 bg-neutral-50 px-5 py-3 flex flex-wrap items-center gap-3">
-          <div className="min-w-0 text-[11px] font-bold text-neutral-500">
+          <div className="min-w-0 text-xs font-bold text-neutral-700">
             <span className="mr-2">{row.studentIndex}</span>
             <span className={`rounded-full px-2 py-0.5 ${isComplete ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
               {isAbsent ? "Absent" : isComplete ? "Complete" : `${countedAnswers}/${required} entered`}
             </span>
-            {!isAbsent && hasMark && <span className="ml-2 text-neutral-400">Total {total.toFixed(1)} / {maxScore}</span>}
-            {!isReadOnly && <span className="hidden lg:inline ml-2 font-medium text-neutral-400">Use Save Marks on the register to persist this draft.</span>}
+            {!isAbsent && hasMark && <span className="ml-2 text-neutral-600">Total {total.toFixed(1)} / {maxScore}</span>}
+            {!isReadOnly && <span className="hidden lg:inline ml-2 font-medium text-neutral-600">Use Save Marks on the register to persist this draft.</span>}
           </div>
           <div className="ml-auto flex items-center gap-2">
             {isEditing ? (
@@ -311,14 +293,14 @@ export function ComponentMarksDialog({
                 <button
                   type="button"
                   onClick={handleCancel}
-                  className="h-9 px-3 rounded-lg border border-neutral-200 bg-white text-xs font-bold text-neutral-600 hover:bg-neutral-100 cursor-pointer"
+                  className="h-9 px-3 rounded-lg border border-neutral-200 bg-white text-sm font-bold text-neutral-700 hover:bg-neutral-100 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleSave}
-                  className="h-9 px-4 rounded-lg bg-indigo-600 text-xs font-bold text-white hover:bg-indigo-700 flex items-center gap-1.5 cursor-pointer"
+                  className="h-9 px-4 rounded-lg bg-indigo-600 text-sm font-bold text-white hover:bg-indigo-700 flex items-center gap-1.5 cursor-pointer"
                 >
                   <Save className="h-3.5 w-3.5" />Save
                 </button>
@@ -329,7 +311,7 @@ export function ComponentMarksDialog({
                   <button
                     type="button"
                     onClick={() => setIsEditing(true)}
-                    className="h-9 px-3 rounded-lg border border-indigo-200 bg-white text-xs font-bold text-indigo-700 hover:bg-indigo-50 flex items-center gap-1.5 cursor-pointer"
+                    className="h-9 px-3 rounded-lg border border-indigo-200 bg-white text-sm font-bold text-indigo-700 hover:bg-indigo-50 flex items-center gap-1.5 cursor-pointer"
                   >
                     <Pencil className="h-3.5 w-3.5" />Edit
                   </button>
@@ -337,7 +319,7 @@ export function ComponentMarksDialog({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="h-9 px-3 rounded-lg bg-neutral-200 text-xs font-bold text-neutral-700 hover:bg-neutral-300 cursor-pointer"
+                  className="h-9 px-3 rounded-lg bg-neutral-200 text-sm font-bold text-neutral-800 hover:bg-neutral-300 cursor-pointer"
                 >
                   Close
                 </button>
