@@ -45,6 +45,20 @@ export interface ModuleStats {
   examTemplate?: ExamQuestionConfig[];
   caCompletionRate?: number;
   marksheetStatus?: MarksheetStatus;
+  // ── Workflow bookkeeping written by the desks (free-form JSON column) ──────
+  /** Active Lecturer approved the Examiner's assessment after a variance. */
+  lecturerApproved?: boolean;
+  lecturerApprovedAt?: string;
+  /** Set when the lecturer submits the marksheet for second checking. */
+  submittedAt?: string;
+  /** Set when the lecturer recalls a submission back to MARKING. */
+  recalledAt?: string;
+  recallCount?: number;
+  marksheetStartedAt?: string;
+  blueprintUpdatedAt?: string;
+  varianceThreshold?: number;
+  reconciliationRequestedAt?: string;
+  reconciledAt?: string;
 }
 
 /** Full module row returned from API */
