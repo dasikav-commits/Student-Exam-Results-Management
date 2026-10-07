@@ -2,22 +2,33 @@
 // Lecturer Desk — shared marksheet engine
 //
 // Pure, dependency-free helpers used by BOTH the Lecturer Desk UI
-// (src/app/dashboard/lecturer/page.tsx) and the lecturer API routes
-// (src/app/api/lecturer/*). Keeping the maths in one place means the grid, the
-// summary panel, the CSV export and the server-side gate can never drift apart.
+// (src/app/dashboard/lecturer/page.tsx), the HOD Console preview and the
+// lecturer API routes. Keeping the maths in one place means the blueprint
+// builder, the entry grids, the summary panel, the CSV export and the
+// server-side gate can never drift apart.
 //
-// Scoring semantics are intentionally identical to the Second Examiner desk so
-// that variance comparisons stay meaningful:
-//   • Only the first `questionsToAnswer` answered questions are counted.
-//     Questions are ordered naturally (Q1, Q2, … Q10 — never Q1, Q10, Q2), so the
-//     result no longer depends on JS object insertion order (JSONB columns do not
-//     preserve key order, which made the old `Object.values().slice()` unstable).
+// ── CA component groups ──────────────────────────────────────────────────────
+//   Group A (practical / performance work)
+//     PROJECT · PRESENTATION · LAB_REPORT
+//     → Type, Name, Weightage, Total Marks, Score Mode.
+//     → One mark per student for the whole component.
+//
+//   Group B (discrete written assessments)
+//     QUIZ · ASSIGNMENT · MIDTERM · TUTORIAL
+//     → Type, Name, Weightage, Total Questions + a per-question weightage
+//       (marks) row for every question, Score Mode.
+//     → One mark per question, each with its own maximum.
+//
+// Scoring semantics stay identical to the Second Examiner desk so variance
+// comparisons remain meaningful:
+//   • Only the first `questionsToAnswer` answered questions count, ordered
+//     naturally (Q1, Q2, … Q10 — never Q1, Q10, Q2). JSONB does not preserve
+//     key order, so relying on it made totals unstable across reloads.
 //   • SUM  → sum of those answers.
-//   • AVG  → that sum divided by `questionsToAnswer` (an unanswered compulsory
-//            question still costs the student marks).
+//   • AVG  → that sum divided by `questionsToAnswer`.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { CaComponent, FinalBlueprint, ModuleStats } from "@/types/hod";
+import type { CaComponent, CaGroup, FinalBlueprint, ModuleStats } from "@/types/hod";
 
 // ─── Small utilities ─────────────────────────────────────────────────────────
 
@@ -35,6 +46,140 @@ export function asModuleStats(value: unknown): ModuleStats {
 export function toErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+// ─── CA component types & groups ─────────────────────────────────────────────
+
+/** Practical / performance components — one overall mark. */
+export const CA_GROUP_A_TYPES = ["PROJECT", "PRESENTATION", "LAB_REPORT"] as const;
+
+/** Discrete written assessments — one mark per question. */
+export const CA_GROUP_B_TYPES = ["QUIZ", "ASSIGNMENT", "MIDTERM", "TUTORIAL"] as const;
+
+export const CA_TYPES_BY_GROUP: Record<CaGroup, readonly string[]> = {
+  A: CA_GROUP_A_TYPES,
+  B: CA_GROUP_B_TYPES,
+};
+
+export const CA_GROUP_META: Record<CaGroup, { label: string; short: string; blurb: string; badge: string }> = {
+  A: {
+    label: "Group A · Practical & performance",
+    short: "Practical & performance",
+    blurb: "One overall mark per student (project, presentation, lab report).",
+    badge: "bg-violet-100 text-violet-700 border-violet-200",
+  },
+  B: {
+    label: "Group B · Written assessments",
+    short: "Written assessments",
+    blurb: "Marks per question, each with its own weightage.",
+    badge: "bg-sky-100 text-sky-700 border-sky-200",
+  },
+};
+
+const CA_TYPE_GROUP: Record<string, CaGroup> = {
+  PROJECT: "A",
+  PRESENTATION: "A",
+  LAB_REPORT: "A",
+  QUIZ: "B",
+  ASSIGNMENT: "B",
+  MIDTERM: "B",
+  TUTORIAL: "B",
+};
+
+export const CA_TYPE_LABELS: Record<string, string> = {
+  QUIZ: "Quiz",
+  ASSIGNMENT: "Assignment",
+  MIDTERM: "Midterm",
+  TUTORIAL: "Tutorial",
+  PROJECT: "Project",
+  PRESENTATION: "Presentation",
+  LAB_REPORT: "Lab report",
+};
+
+export function caTypeLabel(type: unknown): string {
+  const key = String(type ?? "").trim().toUpperCase();
+  return CA_TYPE_LABELS[key] ?? (key ? key.replace(/_/g, " ") : "Component");
+}
+
+/** Which scoring shape does this component type use? Unknown types default to B. */
+export function caGroupOf(type: unknown): CaGroup {
+  const key = String(type ?? "").trim().toUpperCase();
+  return CA_TYPE_GROUP[key] ?? "B";
+}
+
+function componentGroup(comp: Pick<CaComponent, "group" | "type">): CaGroup {
+  return comp.group === "A" || comp.group === "B" ? comp.group : caGroupOf(comp.type);
+}
+
+// ─── Component normalisation (blueprint → canonical shape) ───────────────────
+
+function positiveInt(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  const floored = Math.floor(n);
+  return floored > 0 ? floored : null;
+}
+
+function buildQuestionMarks(raw: unknown, totalQuestions: number, fallbackPer: number): number[] {
+  const source = Array.isArray(raw) ? raw : [];
+  const fallback = fallbackPer > 0 ? fallbackPer : 10;
+  return Array.from({ length: totalQuestions }, (_, i) => {
+    const value = Number(source[i]);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  });
+}
+
+/**
+ * Coerce stored/legacy blueprint data into the canonical component shape.
+ * Blueprints saved before the Group A / Group B split are upgraded here:
+ * a uniform `marksPerQuestion` becomes a per-question weightage list, and
+ * `totalQuestions × marksPerQuestion` becomes `totalMarks` for Group A.
+ */
+export function normaliseCaComponent(raw: unknown): CaComponent {
+  const source = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+
+  const type = String(source.type ?? "ASSIGNMENT").trim().toUpperCase() || "ASSIGNMENT";
+  const group = caGroupOf(type);
+  const id = typeof source.id === "string" && source.id.trim()
+    ? source.id
+    : `ca_${Math.random().toString(36).slice(2, 10)}`;
+  const name = typeof source.name === "string" ? source.name : "";
+  const weightage = Number(source.weightage) || 0;
+  const scoreMode: "SUM" | "AVG" = source.scoreMode === "AVG" ? "AVG" : "SUM";
+
+  const legacyPer = Number(source.marksPerQuestion) || 0;
+  const legacyCount = positiveInt(source.totalQuestions) ?? (Array.isArray(source.questionMarks) ? source.questionMarks.length : 0);
+
+  if (group === "A") {
+    const legacyMax = (legacyCount ?? 0) * legacyPer;
+    const stored = Number(source.totalMarks);
+    const totalMarks = Number.isFinite(stored) && stored > 0 ? stored : (legacyMax > 0 ? legacyMax : 100);
+    return {
+      id, type, name, weightage, scoreMode, group,
+      totalMarks,
+      totalQuestions: 1,
+      questionMarks: [totalMarks],
+      questionsToAnswer: 1,
+      marksPerQuestion: totalMarks,
+    };
+  }
+
+  const totalQuestions = Math.max(1, legacyCount || 3);
+  const questionMarks = buildQuestionMarks(source.questionMarks, totalQuestions, legacyPer);
+  const storedAnswer = positiveInt(source.questionsToAnswer);
+  const questionsToAnswer = storedAnswer ? Math.min(totalQuestions, storedAnswer) : totalQuestions;
+
+  return {
+    id, type, name, weightage, scoreMode, group,
+    totalQuestions,
+    questionMarks,
+    questionsToAnswer,
+    marksPerQuestion: Math.max(...questionMarks),
+  };
+}
+
+export function normaliseCaComponents(list: unknown): CaComponent[] {
+  return Array.isArray(list) ? list.map(normaliseCaComponent) : [];
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -122,6 +267,11 @@ export function sortQuestionKeys(keys: string[]): string[] {
   });
 }
 
+function questionNumber(key: string): number {
+  const n = parseInt(String(key).replace(/\D/g, ""), 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 /** A blank cell is anything that is null/undefined/""/not a finite number. */
 function toFiniteNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -148,6 +298,62 @@ export function hasAnyMark(marks?: Record<string, unknown> | null): boolean {
   return answeredCount(marks) > 0;
 }
 
+// ─── Component geometry (works on normalised OR legacy components) ───────────
+
+/** How many input cells does this component have per student? (Group A → 1) */
+export function componentQuestionCount(comp: CaComponent): number {
+  if (componentGroup(comp) === "A") return 1;
+  const listLength = Array.isArray(comp.questionMarks) ? comp.questionMarks.length : 0;
+  return Math.max(1, positiveInt(comp.totalQuestions) ?? (listLength || 1));
+}
+
+/** The maximum a single cell of this component can hold. */
+export function componentQuestionMax(comp: CaComponent, questionKey: string): number {
+  if (componentGroup(comp) === "A") {
+    const explicit = Number(comp.totalMarks);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+    const legacy = (positiveInt(comp.totalQuestions) ?? 0) * (Number(comp.marksPerQuestion) || 0);
+    return legacy > 0 ? legacy : (Number(comp.marksPerQuestion) || 0);
+  }
+  const index = Math.max(0, questionNumber(questionKey) - 1);
+  const per = Array.isArray(comp.questionMarks) ? Number(comp.questionMarks[index]) : NaN;
+  if (Number.isFinite(per) && per > 0) return per;
+  return Number(comp.marksPerQuestion) || 0;
+}
+
+/** Cell keys for this component's grid row: Group A → ["Q1"] (rendered as "Mark"). */
+export function componentQuestionKeys(comp: CaComponent): string[] {
+  return questionKeys(componentQuestionCount(comp));
+}
+
+/** How many answers the student must provide (Group A → 1). */
+export function componentRequiredAnswers(comp: CaComponent): number {
+  const count = componentQuestionCount(comp);
+  const stored = positiveInt(comp.questionsToAnswer);
+  return stored ? Math.min(count, stored) : count;
+}
+
+/** Raw score obtainable = sum of the maxima of the questions that must be answered. */
+export function componentMaxScore(comp: CaComponent): number {
+  const required = componentRequiredAnswers(comp);
+  return componentQuestionKeys(comp)
+    .slice(0, required)
+    .reduce((sum, key) => sum + componentQuestionMax(comp, key), 0);
+}
+
+/** The component's own "worth" before weighting (Group A → totalMarks). */
+export function componentRawTotal(comp: CaComponent): number {
+  if (componentGroup(comp) === "A") return componentQuestionMax(comp, "Q1");
+  const marks = Array.isArray(comp.questionMarks) ? comp.questionMarks : [];
+  if (marks.length === 0) return componentMaxScore(comp);
+  return marks.reduce((sum, value) => sum + (Number(value) || 0), 0);
+}
+
+export function finalMaxScore(bp?: Pick<FinalBlueprint, "questionsToAnswer" | "marksPerQuestion"> | null): number {
+  if (!bp) return 0;
+  return (Math.max(0, Number(bp.questionsToAnswer) || 0)) * (Math.max(0, Number(bp.marksPerQuestion) || 0));
+}
+
 // ─── Core scoring ────────────────────────────────────────────────────────────
 
 /**
@@ -164,18 +370,6 @@ export function computeRowTotal(
   const sum = counted.reduce((acc, m) => acc + m.value, 0);
   if (scoreMode === "AVG") return required > 0 ? sum / required : 0;
   return sum;
-}
-
-/** Marks obtainable for a component = the questions this student must answer. */
-export function componentMaxScore(comp: Pick<CaComponent, "questionsToAnswer" | "marksPerQuestion">): number {
-  const qs = Math.max(0, Number(comp.questionsToAnswer) || 0);
-  const per = Math.max(0, Number(comp.marksPerQuestion) || 0);
-  return qs * per;
-}
-
-export function finalMaxScore(bp?: Pick<FinalBlueprint, "questionsToAnswer" | "marksPerQuestion"> | null): number {
-  if (!bp) return 0;
-  return componentMaxScore(bp);
 }
 
 export interface WeightedBreakdown {
@@ -211,7 +405,11 @@ export function computeWeightedScores(
     if (row.isAbsentCa?.[comp.id]) continue; // absent → 0
     const max = componentMaxScore(comp);
     if (max <= 0) continue;
-    const raw = computeRowTotal(row.caQuestionsMarks?.[comp.id] ?? {}, comp.questionsToAnswer, comp.scoreMode);
+    const raw = computeRowTotal(
+      row.caQuestionsMarks?.[comp.id] ?? {},
+      componentRequiredAnswers(comp),
+      comp.scoreMode
+    );
     ca += (Math.min(Math.max(raw, 0), max) / max) * weight;
   }
 
@@ -254,8 +452,9 @@ export function computeRowProgress(
 
   for (const comp of caComponents ?? []) {
     if (row.isAbsentCa?.[comp.id]) continue;
-    required += Math.max(1, Number(comp.questionsToAnswer) || 1);
-    filled += Math.min(answeredCount(row.caQuestionsMarks?.[comp.id] ?? {}), Math.max(1, Number(comp.questionsToAnswer) || 1));
+    const need = Math.max(1, componentRequiredAnswers(comp));
+    required += need;
+    filled += Math.min(answeredCount(row.caQuestionsMarks?.[comp.id] ?? {}), need);
   }
 
   if (finalBlueprint?.enabled && !row.isAbsentFinal) {
@@ -311,21 +510,32 @@ export function validateMarksheet(
   }
 
   comps.forEach((comp, idx) => {
-    const label = comp.name?.trim() || `${comp.type || "CA"} component ${idx + 1}`;
+    const group = componentGroup(comp);
+    const label = comp.name?.trim() || `${caTypeLabel(comp.type)} component ${idx + 1}`;
+
     if (!comp.name?.trim()) {
       issues.push({ level: "warning", message: `${label}: give this component a name.` });
     }
     if (!(Number(comp.weightage) > 0)) {
       issues.push({ level: "warning", message: `${label}: weightage is 0%.` });
     }
-    if (!(Number(comp.marksPerQuestion) > 0)) {
-      issues.push({ level: "error", message: `${label}: marks per question must be greater than 0.` });
-    }
-    if (!(Number(comp.totalQuestions) > 0)) {
-      issues.push({ level: "error", message: `${label}: total questions must be greater than 0.` });
-    }
-    if (Number(comp.questionsToAnswer) > Number(comp.totalQuestions)) {
-      issues.push({ level: "error", message: `${label}: the number of questions to answer exceeds the total questions.` });
+
+    if (group === "A") {
+      if (!(componentQuestionMax(comp, "Q1") > 0)) {
+        issues.push({ level: "error", message: `${label}: total marks must be greater than 0.` });
+      }
+    } else {
+      const count = componentQuestionCount(comp);
+      if (!(Number(comp.totalQuestions) > 0)) {
+        issues.push({ level: "error", message: `${label}: total questions must be greater than 0.` });
+      }
+      const missing = questionKeys(count).filter(key => !(componentQuestionMax(comp, key) > 0));
+      if (missing.length > 0) {
+        issues.push({
+          level: "error",
+          message: `${label}: every question needs a weightage — missing ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? "…" : ""}.`,
+        });
+      }
     }
   });
 
@@ -354,12 +564,11 @@ export function validateMarksheet(
     const index = row.studentIndex;
 
     for (const comp of comps) {
-      const label = comp.name?.trim() || comp.type || "CA component";
-      const required = Math.max(1, Number(comp.questionsToAnswer) || 1);
-      const perMark = Number(comp.marksPerQuestion) || 0;
-
+      const label = comp.name?.trim() || caTypeLabel(comp.type);
       if (row.isAbsentCa?.[comp.id]) continue;
 
+      const keys = componentQuestionKeys(comp);
+      const required = Math.max(1, componentRequiredAnswers(comp));
       const marks = (row.caQuestionsMarks?.[comp.id] ?? {}) as Record<string, unknown>;
       const entered = enteredMarks(marks);
 
@@ -368,6 +577,12 @@ export function validateMarksheet(
           level: "error",
           studentIndex: index,
           message: `${index}: ${label} — ${entered.length} of ${required} required answers recorded.`,
+        });
+      } else if (entered.length > keys.length) {
+        issues.push({
+          level: "warning",
+          studentIndex: index,
+          message: `${index}: ${label} — ${entered.length} answers recorded but only ${keys.length} questions exist.`,
         });
       } else if (entered.length > required) {
         issues.push({
@@ -378,11 +593,12 @@ export function validateMarksheet(
       }
 
       for (const mark of entered) {
-        if (mark.value < 0 || (perMark > 0 && mark.value > perMark)) {
+        const max = componentQuestionMax(comp, mark.key);
+        if (mark.value < 0 || (max > 0 && mark.value > max)) {
           issues.push({
             level: "error",
             studentIndex: index,
-            message: `${index}: ${label} ${mark.key} is ${mark.value} — must be between 0 and ${perMark}.`,
+            message: `${index}: ${label} ${mark.key} is ${mark.value} — must be between 0 and ${max}.`,
           });
         }
       }
@@ -435,7 +651,18 @@ export function summariseIssues(issues: MarksheetIssue[], limit = 3): string {
 
 // ─── Blueprint input validation (shared by the API and the Save button) ─────
 
-/** Returns null when the payload is structurally sound, otherwise the reason. */
+function isFiniteNumber(value: unknown): boolean {
+  return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+}
+
+function isPositiveInt(value: unknown): boolean {
+  return isFiniteNumber(value) && Number.isInteger(Number(value)) && Number(value) > 0;
+}
+
+/**
+ * Validates a raw blueprint payload, understanding both component groups.
+ * Returns null when structurally sound, otherwise the reason.
+ */
 export function validateBlueprintInput(
   caComponents: unknown,
   finalBlueprint: unknown
@@ -459,20 +686,46 @@ export function validateBlueprintInput(
 
   for (let i = 0; i < caComponents.length; i++) {
     const comp = caComponents[i] as Record<string, unknown>;
-    const label = `CA component ${i + 1}`;
-    if (!comp || typeof comp !== "object") return `${label} is not a valid object.`;
-    if (typeof comp.id !== "string" || !comp.id.trim()) return `${label} is missing an id.`;
-    if (typeof comp.type !== "string" || !comp.type.trim()) return `${label} is missing a type.`;
+    const rawLabel = `CA component ${i + 1}`;
+    if (!comp || typeof comp !== "object") return `${rawLabel} is not a valid object.`;
+    if (typeof comp.id !== "string" || !comp.id.trim()) return `${rawLabel} is missing an id.`;
+    if (typeof comp.type !== "string" || !comp.type.trim()) return `${rawLabel} is missing a type.`;
+    if (typeof comp.name !== "string" || !comp.name.trim()) return `${rawLabel} needs a name.`;
     if (!isFiniteNumber(comp.weightage) || Number(comp.weightage) < 0 || Number(comp.weightage) > 100) {
-      return `${label} weightage must be between 0 and 100.`;
+      return `${rawLabel} weightage must be between 0 and 100.`;
     }
-    if (!isPositiveInt(comp.totalQuestions)) return `${label} total questions must be a positive whole number.`;
-    if (!isPositiveInt(comp.marksPerQuestion)) return `${label} marks per question must be a positive whole number.`;
-    if (!isPositiveInt(comp.questionsToAnswer)) return `${label} questions to answer must be a positive whole number.`;
-    if (Number(comp.questionsToAnswer) > Number(comp.totalQuestions)) {
-      return `${label} questions to answer cannot exceed the total questions.`;
+    if (comp.scoreMode !== "SUM" && comp.scoreMode !== "AVG") return `${rawLabel} score mode must be SUM or AVG.`;
+
+    const label = `CA component ${i + 1} (${caTypeLabel(comp.type)})`;
+
+    if (caGroupOf(comp.type) === "A") {
+      // Group A — one overall mark for the component.
+      if (!isPositiveInt(comp.totalMarks)) {
+        return `${label}: total marks must be a positive whole number.`;
+      }
+    } else {
+      // Group B — a weightage for every question.
+      const expected = normaliseCaComponent(comp);
+      const count = positiveInt(comp.totalQuestions);
+      if (!count) return `${label}: total questions must be a positive whole number.`;
+      if (count > 50) return `${label}: total questions cannot exceed 50.`;
+      if (!Array.isArray(comp.questionMarks)) {
+        return `${label}: every question needs a weightage.`;
+      }
+      if (comp.questionMarks.length !== count) {
+        return `${label}: expected ${count} question weightage(s) but received ${comp.questionMarks.length}.`;
+      }
+      for (let q = 0; q < count; q++) {
+        const value = Number((comp.questionMarks as unknown[])[q]);
+        if (!Number.isFinite(value) || value <= 0) {
+          return `${label}: weightage for Q${q + 1} must be greater than 0.`;
+        }
+        if (value > 1000) {
+          return `${label}: weightage for Q${q + 1} looks too large (maximum 1000).`;
+        }
+      }
+      void expected;
     }
-    if (comp.scoreMode !== "SUM" && comp.scoreMode !== "AVG") return `${label} score mode must be SUM or AVG.`;
   }
 
   const caTotal = caComponents.reduce((sum, c) => sum + (Number((c as Record<string, unknown>).weightage) || 0), 0);
@@ -482,14 +735,6 @@ export function validateBlueprintInput(
   }
 
   return null;
-}
-
-function isFiniteNumber(value: unknown): boolean {
-  return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
-}
-
-function isPositiveInt(value: unknown): boolean {
-  return isFiniteNumber(value) && Number.isInteger(Number(value)) && Number(value) > 0;
 }
 
 // ─── Server-side sanitiser ───────────────────────────────────────────────────
@@ -528,32 +773,36 @@ export function sanitiseMarkRow(
       caQuestionsMarks[comp.id] = {};
       continue;
     }
-    caQuestionsMarks[comp.id] = sanitiseQuestionMap(rawCa[comp.id], comp.totalQuestions, comp.marksPerQuestion);
+    const maxima: Record<string, number> = {};
+    for (const key of componentQuestionKeys(comp)) maxima[key] = componentQuestionMax(comp, key);
+    caQuestionsMarks[comp.id] = sanitiseQuestionMap(rawCa[comp.id], maxima);
   }
 
   const isAbsentFinal = raw.isAbsentFinal === true;
-  const finalExamQuestionsMarks = isAbsentFinal
-    ? {}
-    : sanitiseQuestionMap(rawFinal, finalBlueprint?.totalQuestions ?? 0, finalBlueprint?.marksPerQuestion ?? 0);
+  const finalCount = Math.max(0, Number(finalBlueprint?.totalQuestions) || 0);
+  const finalMaxima: Record<string, number> = {};
+  for (const key of questionKeys(finalCount)) {
+    finalMaxima[key] = Number(finalBlueprint?.marksPerQuestion) || 0;
+  }
+
+  const finalExamQuestionsMarks = isAbsentFinal ? {} : sanitiseQuestionMap(rawFinal, finalMaxima);
 
   return { studentIndex, caQuestionsMarks, finalExamQuestionsMarks, isAbsentCa, isAbsentFinal };
 }
 
-/** Keeps only Q1…Qn, drops blanks, clamps to [0, maxMarks]. */
+/** Keeps only the expected keys, drops blanks, clamps each to its own maximum. */
 export function sanitiseQuestionMap(
   raw: unknown,
-  totalQuestions: number,
-  marksPerQuestion: number
+  maxima: Record<string, number>
 ): Record<string, number> {
   const out: Record<string, number> = {};
   if (!raw || typeof raw !== "object") return out;
 
-  const allowed = new Set(questionKeys(totalQuestions));
-  const max = Number(marksPerQuestion) || 0;
   const source = raw as Record<string, unknown>;
 
   for (const key of sortQuestionKeys(Object.keys(source))) {
-    if (allowed.size > 0 && !allowed.has(key)) continue;
+    const max = maxima[key];
+    if (max === undefined) continue; // unknown question key — drop it
     const value = toFiniteNumber(source[key]);
     if (value === null) continue;
     out[key] = Math.min(max > 0 ? max : value, Math.max(0, value));
@@ -584,14 +833,15 @@ export function buildMarksheetCsv(
 
   const header: string[] = ["Student Index"];
   for (const comp of comps) {
-    const label = comp.name?.trim() || comp.type || "CA";
-    for (const q of questionKeys(comp.totalQuestions)) header.push(`${label} ${q}`);
-    header.push(`${label} Total`);
-    header.push(`${label} Absent`);
+    const label = comp.name?.trim() || caTypeLabel(comp.type);
+    for (const q of componentQuestionKeys(comp)) {
+      header.push(componentGroup(comp) === "A" ? `${label} Mark` : `${label} ${q}`);
+    }
+    header.push(`${label} Total`, `${label} Max`, `${label} Absent`);
   }
   for (const q of finalQs) header.push(`Final ${q}`);
   if (finalBlueprint?.enabled) {
-    header.push("Final Total", "Final Absent");
+    header.push("Final Total", "Final Max", "Final Absent");
   }
   header.push("CA Weighted", "Final Weighted", "Module Mark (100)");
 
@@ -603,10 +853,15 @@ export function buildMarksheetCsv(
     for (const comp of comps) {
       const marks = (row.caQuestionsMarks?.[comp.id] ?? {}) as Record<string, unknown>;
       const absent = row.isAbsentCa?.[comp.id] === true;
-      for (const q of questionKeys(comp.totalQuestions)) {
+      const keys = componentQuestionKeys(comp);
+
+      for (const q of keys) {
         cells.push(absent ? "AB" : (toFiniteNumber(marks[q]) ?? ""));
       }
-      cells.push(absent ? "AB" : round1(computeRowTotal(marks, comp.questionsToAnswer, comp.scoreMode)));
+      cells.push(
+        absent ? "AB" : round1(computeRowTotal(marks, componentRequiredAnswers(comp), comp.scoreMode))
+      );
+      cells.push(round1(componentMaxScore(comp)));
       cells.push(absent ? "YES" : "");
     }
 
@@ -616,6 +871,7 @@ export function buildMarksheetCsv(
     }
     if (finalBlueprint?.enabled) {
       cells.push(row.isAbsentFinal ? "AB" : round1(computeRowTotal(finalMarks, finalBlueprint.questionsToAnswer, finalBlueprint.scoreMode)));
+      cells.push(round1(finalMaxScore(finalBlueprint)));
       cells.push(row.isAbsentFinal ? "YES" : "");
     }
 

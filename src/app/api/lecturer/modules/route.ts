@@ -5,6 +5,7 @@ import {
   blockingIssues,
   isLecturerLocked,
   isMarksheetStatus,
+  normaliseCaComponents,
   summariseIssues,
   toErrorMessage,
   validateBlueprintInput,
@@ -186,7 +187,7 @@ export async function PATCH(request: Request) {
 
       // ── Submission gate: the marksheet must be complete ────────────────────
       if (target === "SECOND_CHECKING") {
-        const caComponents = (currentStats.caComponents ?? []) as CaComponent[];
+        const caComponents = normaliseCaComponents(currentStats.caComponents);
         const finalBlueprint = (currentStats.finalBlueprint ?? null) as FinalBlueprint | null;
 
         if (caComponents.length === 0 && !finalBlueprint?.enabled) {
@@ -268,7 +269,9 @@ export async function PATCH(request: Request) {
       );
     }
 
-    const caComponents = body.caComponents as CaComponent[];
+    // Canonical shape: Group A components carry totalMarks, Group B components
+    // carry a per-question weightage list. Legacy payloads are upgraded here.
+    const caComponents = normaliseCaComponents(body.caComponents);
     const finalBlueprint = body.finalBlueprint as FinalBlueprint;
 
     // ── Auto-generate examTemplate from finalBlueprint ──────────────────────

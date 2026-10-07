@@ -15,17 +15,31 @@ import {
   User, LogOut, Search, Download, ClipboardPaste, RotateCcw, Undo2,
   TriangleAlert, Info, Table2, X, Send, ArrowDownToLine,
 } from "lucide-react";
-import type { CaComponent, DepartmentModule, FinalBlueprint, ModuleStats, StudentMarkRecord } from "@/types/hod";
+import type { CaComponent, CaGroup, DepartmentModule, FinalBlueprint, ModuleStats, StudentMarkRecord } from "@/types/hod";
 import {
+  CA_GROUP_A_TYPES,
+  CA_GROUP_B_TYPES,
+  CA_GROUP_META,
+  CA_TYPES_BY_GROUP,
   VARIANCE_THRESHOLD,
   blockingIssues,
   buildMarksheetCsv,
+  caGroupOf,
+  caTypeLabel,
+  componentMaxScore,
+  componentQuestionCount,
+  componentQuestionKeys,
+  componentQuestionMax,
+  componentRawTotal,
+  componentRequiredAnswers,
   computeRowProgress,
   computeRowTotal,
   computeWeightedScores,
   downloadCsv,
   enteredMarks,
   isLecturerLocked,
+  normaliseCaComponent,
+  normaliseCaComponents,
   questionKeys,
   statusBadgeClass,
   statusLabel,
@@ -57,7 +71,13 @@ const SCORE_MODES: { value: "SUM" | "AVG"; label: string }[] = [
   { value: "AVG", label: "Average (μ)" },
 ];
 
-const CA_TYPES = ["QUIZ", "ASSIGNMENT", "MIDTERM", "LAB_REPORT", "PROJECT", "PRESENTATION"];
+/**
+ * CA blueprints come in two shapes (see @/types/hod):
+ *   Group A — practical/performance work: one mark per student.
+ *   Group B — written assessments: one mark per question, each with its own weightage.
+ */
+const GROUP_A_PREVIEW: readonly string[] = CA_GROUP_A_TYPES.slice(0, 3);
+const GROUP_B_PREVIEW: readonly string[] = CA_GROUP_B_TYPES.slice(0, 4);
 
 /** Index formats we accept as a student identifier. */
 const INDEX_PATTERN = /^[A-Z0-9/\-]{3,20}$/;
@@ -165,7 +185,8 @@ export default function LecturerConsolePage() {
     setMainTab("blueprint");
 
     const stats = statsOf(mod);
-    const nextCa: CaComponent[] = stats.caComponents ?? [];
+    // Blueprints saved before the Group A / Group B split are upgraded here.
+    const nextCa: CaComponent[] = normaliseCaComponents(stats.caComponents);
     const nextBp: FinalBlueprint = stats.finalBlueprint ?? EMPTY_BLUEPRINT;
     setCaComponents(nextCa);
     setFinalBlueprint(nextBp);
@@ -257,6 +278,10 @@ export default function LecturerConsolePage() {
   const warningCount = warnings.length;
 
   const caWeightTotal = caComponents.reduce((sum, comp) => sum + (Number(comp.weightage) || 0), 0);
+  const groupWeightTotal = (group: CaGroup) =>
+    caComponents
+      .filter(comp => (comp.group ?? caGroupOf(comp.type)) === group)
+      .reduce((sum, comp) => sum + (Number(comp.weightage) || 0), 0);
   const grandWeightTotal = caWeightTotal + (Number(finalBlueprint.weightage) || 0);
   const blankBlueprint = caComponents.length === 0 && !finalBlueprint.enabled;
 
@@ -308,12 +333,15 @@ export default function LecturerConsolePage() {
   );
 
   // ── CA Component handlers ──────────────────────────────────────────────────
-  const addCA = () =>
-    setCaComponents(prev => [...prev, {
-      id: crypto.randomUUID(), type: "ASSIGNMENT", name: "",
-      weightage: 0, totalQuestions: 3, marksPerQuestion: 10,
-      questionsToAnswer: 3, scoreMode: "SUM",
-    }]);
+  /** Creates a blank component in the requested scoring group. */
+  const addCA = (group: CaGroup) => {
+    const type = CA_TYPES_BY_GROUP[group][0];
+    const base = { id: crypto.randomUUID(), type, name: "", weightage: 0, scoreMode: "SUM" as const };
+    const comp = group === "A"
+      ? normaliseCaComponent({ ...base, totalMarks: 100 })
+      : normaliseCaComponent({ ...base, totalQuestions: 3, questionMarks: [10, 10, 10] });
+    setCaComponents(prev => [...prev, comp]);
+  };
 
   const removeCA = (id: string) => {
     const comp = caComponents.find(c => c.id === id);
@@ -351,15 +379,84 @@ export default function LecturerConsolePage() {
     doRemove();
   };
 
+  const patchCA = (id: string, patch: Partial<CaComponent>) =>
+    setCaComponents(prev => prev.map(c => (c.id === id ? { ...c, ...patch } : c)));
+
   const updateCA = <K extends keyof CaComponent,>(id: string, field: K, value: CaComponent[K]) =>
+    patchCA(id, { [field]: value } as Partial<CaComponent>);
+
+  /** Group A — the single mark the whole component is scored out of. */
+  const updateCaTotalMarks = (id: string, raw: string) => {
+    const value = Math.max(1, Math.floor(Number(raw) || 0));
+    patchCA(id, {
+      totalMarks: value,
+      marksPerQuestion: value,
+      questionMarks: [value],
+      questionsToAnswer: 1,
+    });
+  };
+
+  /**
+   * Group B — changing "total questions" re-shapes the per-question weightage
+   * rows, extending new rows with the last value the lecturer typed.
+   */
+  const updateCaTotalQuestions = (id: string, raw: string) => {
     setCaComponents(prev => prev.map(c => {
       if (c.id !== id) return c;
-      const updated = { ...c, [field]: value };
-      // questionsToAnswer cannot exceed totalQuestions
-      if (field === "totalQuestions" && updated.questionsToAnswer > updated.totalQuestions)
-        updated.questionsToAnswer = updated.totalQuestions;
-      return updated;
+      const count = Math.max(1, Math.min(50, Math.floor(Number(raw) || 1)));
+      const current = c.questionMarks ?? [];
+      const seed = current[current.length - 1] ?? (Number(c.marksPerQuestion) || 10);
+      const questionMarks = Array.from({ length: count }, (_, i) =>
+        Number(current[i]) > 0 ? Number(current[i]) : seed
+      );
+      return { ...c, totalQuestions: count, questionMarks, questionsToAnswer: count };
     }));
+  };
+
+  /** Group B — the weightage (marks) carried by a single question. */
+  const updateCaQuestionMark = (id: string, index: number, raw: string) => {
+    setCaComponents(prev => prev.map(c => {
+      if (c.id !== id) return c;
+      const questionMarks = [...(c.questionMarks ?? [])];
+      questionMarks[index] = Math.max(0, Number(raw) || 0);
+      return { ...c, questionMarks, marksPerQuestion: Math.max(...questionMarks, 0) };
+    }));
+  };
+
+  /** Spread the current value across every question of a Group B component. */
+  const fillCaQuestionMarks = (id: string) => {
+    setCaComponents(prev => prev.map(c => {
+      if (c.id !== id) return c;
+      const marks = c.questionMarks ?? [];
+      const seed = marks[0] ?? 10;
+      const filled = marks.map(() => seed);
+      return { ...c, questionMarks: filled, marksPerQuestion: seed };
+    }));
+  };
+
+  /**
+   * Switching the type across groups re-shapes the component, carrying the
+   * overall mark across so the lecturer does not lose their intention.
+   */
+  const changeCaType = (id: string, type: string) => {
+    setCaComponents(prev => prev.map(c => {
+      if (c.id !== id) return c;
+      const nextGroup = caGroupOf(type);
+      const currentGroup = c.group ?? caGroupOf(c.type);
+      if (nextGroup === currentGroup) return { ...c, type };
+
+      if (nextGroup === "A") {
+        const totalMarks = componentRawTotal(c) || 100;
+        return { ...c, type, group: "A", totalMarks, marksPerQuestion: totalMarks, questionMarks: [totalMarks], totalQuestions: 1, questionsToAnswer: 1 };
+      }
+
+      const count = Math.max(1, Math.floor(Number(c.totalQuestions) || 3));
+      const total = c.totalMarks ?? componentRawTotal(c) ?? count * 10;
+      const per = Math.max(1, Math.round(total / count));
+      const questionMarks = Array.from({ length: count }, () => per);
+      return { ...c, type, group: "B", totalQuestions: count, questionMarks, questionsToAnswer: count, marksPerQuestion: per, totalMarks: undefined };
+    }));
+  };
 
   // ── Blueprint Save ─────────────────────────────────────────────────────────
   const handleSaveBlueprint = async (): Promise<boolean> => {
@@ -378,7 +475,9 @@ export default function LecturerConsolePage() {
       });
       const result = await res.json();
       if (res.ok) {
-        const nextCa: CaComponent[] = result.stats?.caComponents ?? caComponents;
+        const nextCa: CaComponent[] = result.stats?.caComponents
+          ? normaliseCaComponents(result.stats.caComponents)
+          : caComponents;
         const nextBp: FinalBlueprint = result.stats?.finalBlueprint ?? finalBlueprint;
         setCaComponents(nextCa);
         setFinalBlueprint(nextBp);
@@ -597,7 +696,7 @@ export default function LecturerConsolePage() {
     if (grid.length === 0) return;
     event.preventDefault();
 
-    const keys = questionKeys(comp.totalQuestions);
+    const keys = componentQuestionKeys(comp);
     const startColumn = Math.max(0, keys.indexOf(startKey));
 
     mutateStudents(prev => {
@@ -611,7 +710,7 @@ export default function LecturerConsolePage() {
         cells.forEach((value, columnOffset) => {
           const key = keys[startColumn + columnOffset];
           if (!key || value === null) return;
-          compMarks[key] = clampMark(value, comp.marksPerQuestion);
+          compMarks[key] = clampMark(value, componentQuestionMax(comp, key));
         });
         next[target] = { ...row, caQuestionsMarks: { ...row.caQuestionsMarks, [comp.id]: compMarks } };
       });
@@ -620,7 +719,7 @@ export default function LecturerConsolePage() {
 
     setFeedback({
       type: "info",
-      text: `Pasted ${grid.length} row(s) into ${comp.name || comp.type}. Review the values, then save.`,
+      text: `Pasted ${grid.length} row(s) into ${comp.name || caTypeLabel(comp.type)}. Review the values, then save.`,
     });
   };
 
@@ -1325,26 +1424,57 @@ export default function LecturerConsolePage() {
                     {/* ── CA Setup Tab ─────────────────────────────────────── */}
                     {bpTab === "ca" && (
                       <div className="space-y-4">
-                        <div className="flex justify-between items-center">
+                        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
                           <div>
                             <h3 className="font-bold text-sm">Continuous Assessment Components</h3>
-                            <p className="text-xs text-neutral-400 mt-0.5">Define each CA component with its scoring structure.</p>
+                            <p className="text-xs text-neutral-400 mt-0.5 max-w-2xl">
+                              Two blueprint designs. <strong className="text-violet-600">Group A</strong> scores practical work with
+                              one overall mark ({GROUP_A_PREVIEW.map(caTypeLabel).join(", ")}). <strong className="text-sky-600">Group B</strong> scores
+                              written work with a weightage for every question ({GROUP_B_PREVIEW.map(caTypeLabel).join(", ")}).
+                            </p>
                           </div>
-                          <button onClick={addCA} className="flex items-center gap-1.5 h-8 px-3 text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-lg hover:bg-indigo-100 transition-colors cursor-pointer">
-                            <Plus className="h-3.5 w-3.5" />Add Component
-                          </button>
+                          <div className="flex flex-wrap gap-2 shrink-0">
+                            <button
+                              onClick={() => addCA("A")}
+                              className="flex items-center gap-1.5 h-8 px-3 text-xs font-bold bg-violet-50 text-violet-700 border border-violet-100 rounded-lg hover:bg-violet-100 transition-colors cursor-pointer"
+                            >
+                              <Plus className="h-3.5 w-3.5" />Group A component
+                            </button>
+                            <button
+                              onClick={() => addCA("B")}
+                              className="flex items-center gap-1.5 h-8 px-3 text-xs font-bold bg-sky-50 text-sky-700 border border-sky-100 rounded-lg hover:bg-sky-100 transition-colors cursor-pointer"
+                            >
+                              <Plus className="h-3.5 w-3.5" />Group B component
+                            </button>
+                          </div>
                         </div>
 
                         {caComponents.length === 0 && (
-                          <div className="border-2 border-dashed border-neutral-200 rounded-xl p-8 text-center text-sm text-neutral-400">
-                            No CA components yet. Click &quot;Add Component&quot; to start.
+                          <div className="border-2 border-dashed border-neutral-200 rounded-xl p-8 text-center space-y-2">
+                            <p className="text-sm text-neutral-500 font-semibold">No CA components yet.</p>
+                            <p className="text-xs text-neutral-400">
+                              Add a <strong className="text-violet-600">Group A</strong> component for projects, presentations and lab reports,
+                              or a <strong className="text-sky-600">Group B</strong> component for quizzes, assignments, midterms and tutorials.
+                            </p>
                           </div>
                         )}
 
-                        {caComponents.map((comp, idx) => (
-                          <div key={comp.id} className="border border-neutral-200 rounded-xl p-4 space-y-3 bg-neutral-50/30">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-black text-indigo-600 uppercase tracking-wider">Component {idx + 1}</span>
+                        {caComponents.map((comp, idx) => {
+                          const group: CaGroup = comp.group ?? caGroupOf(comp.type);
+                          const meta = CA_GROUP_META[group];
+                          const questionCount = componentQuestionCount(comp);
+                          const questionMarks = comp.questionMarks ?? [];
+                          const rawTotal = componentRawTotal(comp);
+
+                          return (
+                          <div key={comp.id} className="border border-neutral-200 rounded-xl p-4 space-y-4 bg-neutral-50/30">
+                            <div className="flex items-center justify-between gap-3 flex-wrap">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-black text-indigo-600 uppercase tracking-wider">Component {idx + 1}</span>
+                                <span className={`text-[9px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border ${meta.badge}`}>
+                                  Group {group} · {meta.short}
+                                </span>
+                              </div>
                               <button
                                 onClick={() => removeCA(comp.id)}
                                 aria-label={`Remove component ${idx + 1}`}
@@ -1354,72 +1484,166 @@ export default function LecturerConsolePage() {
                               </button>
                             </div>
 
+                            {/* ── Shared fields ─────────────────────────────── */}
                             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                              {/* Type */}
                               <div>
                                 <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Type</label>
-                                <select value={comp.type} onChange={e => updateCA(comp.id, "type", e.target.value)} className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:outline-none focus:border-indigo-500">
-                                  {CA_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                                <select
+                                  value={comp.type}
+                                  onChange={e => changeCaType(comp.id, e.target.value)}
+                                  className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:outline-none focus:border-indigo-500"
+                                >
+                                  <optgroup label="Group A — Practical & performance">
+                                    {CA_GROUP_A_TYPES.map(t => <option key={t} value={t}>{caTypeLabel(t)}</option>)}
+                                  </optgroup>
+                                  <optgroup label="Group B — Written assessments">
+                                    {CA_GROUP_B_TYPES.map(t => <option key={t} value={t}>{caTypeLabel(t)}</option>)}
+                                  </optgroup>
                                 </select>
                               </div>
 
-                              {/* Name */}
                               <div className="sm:col-span-2">
                                 <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Name</label>
-                                <input type="text" value={comp.name} onChange={e => updateCA(comp.id, "name", e.target.value)} placeholder="e.g. Mid-Semester Quiz" className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-500" />
+                                <input
+                                  type="text"
+                                  value={comp.name}
+                                  onChange={e => updateCA(comp.id, "name", e.target.value)}
+                                  placeholder={group === "A" ? "e.g. Group Project Deliverable" : "e.g. Mid-Semester Quiz"}
+                                  className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none focus:border-indigo-500"
+                                />
                               </div>
 
-                              {/* Weightage */}
                               <div>
                                 <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Weightage (%)</label>
-                                <input type="number" min="0" max="100" value={comp.weightage || ""} onChange={e => updateCA(comp.id, "weightage", Number(e.target.value))} className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:outline-none focus:border-indigo-500 text-right" />
+                                <input
+                                  type="number" min="0" max="100"
+                                  value={comp.weightage || ""}
+                                  onChange={e => updateCA(comp.id, "weightage", Number(e.target.value))}
+                                  className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:outline-none focus:border-indigo-500 text-right"
+                                />
                               </div>
 
-                              {/* Total Questions */}
-                              <div>
-                                <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Total Qs</label>
-                                <input type="number" min="1" max="50" value={comp.totalQuestions} onChange={e => updateCA(comp.id, "totalQuestions", Number(e.target.value))} className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:outline-none focus:border-indigo-500 text-right" />
-                              </div>
+                              {group === "A" ? (
+                                /* ── Group A: one overall mark ─────────────── */
+                                <div>
+                                  <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Total Marks</label>
+                                  <input
+                                    type="number" min="1" max="1000"
+                                    value={comp.totalMarks ?? ""}
+                                    onChange={e => updateCaTotalMarks(comp.id, e.target.value)}
+                                    placeholder="100"
+                                    className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:outline-none focus:border-violet-500 text-right"
+                                  />
+                                </div>
+                              ) : (
+                                /* ── Group B: question count ───────────────── */
+                                <div>
+                                  <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Total Questions</label>
+                                  <input
+                                    type="number" min="1" max="50"
+                                    value={comp.totalQuestions ?? ""}
+                                    onChange={e => updateCaTotalQuestions(comp.id, e.target.value)}
+                                    placeholder="6"
+                                    className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:outline-none focus:border-sky-500 text-right"
+                                  />
+                                </div>
+                              )}
+                            </div>
 
-                              {/* Marks Per Q */}
-                              <div>
-                                <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Marks/Q</label>
-                                <input type="number" min="1" value={comp.marksPerQuestion} onChange={e => updateCA(comp.id, "marksPerQuestion", Number(e.target.value))} className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:outline-none focus:border-indigo-500 text-right" />
-                              </div>
-
-                              {/* Questions to Answer */}
-                              <div>
-                                <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Qs to Answer</label>
-                                <input type="number" min="1" max={comp.totalQuestions} value={comp.questionsToAnswer} onChange={e => updateCA(comp.id, "questionsToAnswer", Math.min(comp.totalQuestions, Number(e.target.value)))} className="w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold focus:outline-none focus:border-indigo-500 text-right" />
-                              </div>
-
-                              {/* Score Mode */}
-                              <div className="sm:col-span-2">
-                                <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Score Mode</label>
-                                <div className="flex gap-2">
-                                  {SCORE_MODES.map(m => (
-                                    <button key={m.value} onClick={() => updateCA(comp.id, "scoreMode", m.value)} className={`flex-1 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${comp.scoreMode === m.value ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50"}`}>
-                                      {m.label}
+                            {group === "B" && (
+                              /* ── Group B: a weightage row per question ──── */
+                              <div className="border border-neutral-200 rounded-xl bg-white overflow-hidden">
+                                <div className="px-3 py-2 bg-neutral-50 border-b border-neutral-200 flex flex-wrap items-center gap-2">
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                                    Weightage per question
+                                  </span>
+                                  <span className="text-[10px] text-neutral-400">
+                                    {questionCount} question{questionCount === 1 ? "" : "s"} · {rawTotal} marks in total
+                                  </span>
+                                  {questionCount > 1 && (
+                                    <button
+                                      onClick={() => fillCaQuestionMarks(comp.id)}
+                                      title="Copy Q1's weightage to every question"
+                                      className="ml-auto flex items-center gap-1 h-6 px-2 text-[10px] font-bold bg-white border border-neutral-200 text-neutral-600 rounded-md hover:bg-neutral-50 cursor-pointer"
+                                    >
+                                      <ArrowDownToLine className="h-3 w-3" />Fill from Q1
                                     </button>
-                                  ))}
+                                  )}
+                                </div>
+                                <div className="divide-y divide-neutral-100 max-h-72 overflow-y-auto">
+                                  {questionKeys(questionCount).map((q, questionIndex) => {
+                                    const value = Number(questionMarks[questionIndex]) || 0;
+                                    const share = rawTotal > 0 ? Math.round((value / rawTotal) * 100) : 0;
+                                    return (
+                                      <div key={q} className="flex items-center gap-3 px-3 py-1.5">
+                                        <span className="w-10 text-[11px] font-black text-neutral-500">{q}</span>
+                                        <input
+                                          type="number" min="0" max="1000"
+                                          value={questionMarks[questionIndex] ?? ""}
+                                          onChange={e => updateCaQuestionMark(comp.id, questionIndex, e.target.value)}
+                                          aria-label={`Weightage for ${q}`}
+                                          placeholder="10"
+                                          className="w-24 bg-white border border-neutral-200 rounded-lg px-2.5 py-1 text-xs font-bold text-right focus:outline-none focus:border-sky-500"
+                                        />
+                                        <span className="text-[10px] text-neutral-400 font-semibold">marks</span>
+                                        <span className="ml-auto text-[10px] font-bold text-neutral-400 tabular-nums">
+                                          {share}% of component
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
+                            )}
+
+                            {/* ── Score mode (both groups) ──────────────────── */}
+                            <div>
+                              <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Score Mode</label>
+                              <div className="flex gap-2 sm:max-w-md">
+                                {SCORE_MODES.map(m => (
+                                  <button
+                                    key={m.value}
+                                    onClick={() => updateCA(comp.id, "scoreMode", m.value)}
+                                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${comp.scoreMode === m.value ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50"}`}
+                                  >
+                                    {m.label}
+                                  </button>
+                                ))}
+                              </div>
                             </div>
 
-                            {/* Component summary */}
-                            <div className="bg-indigo-50/40 rounded-lg px-3 py-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-semibold text-indigo-700">
-                              <span>Max raw: {comp.totalQuestions * comp.marksPerQuestion}</span>
-                              <span>Answer: {comp.questionsToAnswer} of {comp.totalQuestions}</span>
+                            {/* ── Component summary ─────────────────────────── */}
+                            <div className={`rounded-lg px-3 py-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-semibold ${group === "A" ? "bg-violet-50/50 text-violet-700" : "bg-sky-50/50 text-sky-700"}`}>
+                              {group === "A" ? (
+                                <>
+                                  <span>One mark per student</span>
+                                  <span>Scored out of: {rawTotal}</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>Marks per question: {questionMarks.join(" + ") || "—"}</span>
+                                  <span>Raw total: {rawTotal}</span>
+                                </>
+                              )}
+                              <span>Contributes: {comp.weightage || 0}%</span>
                               <span>Mode: {comp.scoreMode}</span>
-                              <span className="text-indigo-500">Weighted from: {comp.questionsToAnswer * comp.marksPerQuestion} marks</span>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
 
                         {/* CA Weight Summary */}
-                        <div className="flex justify-between items-center p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold">
+                        <div className="flex flex-wrap justify-between items-center gap-3 p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs font-bold">
                           <span className="text-neutral-600">CA Total Weightage:</span>
-                          <span className={grandWeightTotal === 100 ? "text-emerald-600" : "text-rose-600"}>{caWeightTotal}%</span>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <span className="text-[11px] font-semibold text-violet-600">
+                              Group A: {groupWeightTotal("A")}%
+                            </span>
+                            <span className="text-[11px] font-semibold text-sky-600">
+                              Group B: {groupWeightTotal("B")}%
+                            </span>
+                            <span className={grandWeightTotal === 100 ? "text-emerald-600" : "text-rose-600"}>{caWeightTotal}%</span>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -1705,16 +1929,29 @@ export default function LecturerConsolePage() {
                         )}
 
                         {caComponents.map((comp, compIndex) => {
-                          const compQs = questionKeys(comp.totalQuestions);
-                          const componentMax = comp.questionsToAnswer * comp.marksPerQuestion;
+                          const group: CaGroup = comp.group ?? caGroupOf(comp.type);
+                          const compQs = componentQuestionKeys(comp);
+                          const required = componentRequiredAnswers(comp);
+                          const componentMax = componentMaxScore(comp);
+                          const isSingleMark = group === "A";
 
                           return (
                             <div key={comp.id}>
                               <div className="flex items-center gap-3 mb-3 flex-wrap">
-                                <div className="h-1 w-1 rounded-full bg-orange-500" />
-                                <h4 className="font-bold text-sm">{comp.name || `Component ${compIndex + 1} (${comp.type})`}</h4>
-                                <span className="text-[10px] font-bold text-orange-600 bg-orange-50 px-2 py-0.5 rounded-full border border-orange-100">
-                                  {comp.weightage}% · {comp.questionsToAnswer}/{comp.totalQuestions} Qs · {comp.scoreMode} · max {componentMax}
+                                <div className={`h-1 w-1 rounded-full ${isSingleMark ? "bg-violet-500" : "bg-orange-500"}`} />
+                                <h4 className="font-bold text-sm">
+                                  {comp.name || `${caTypeLabel(comp.type)} component ${compIndex + 1}`}
+                                </h4>
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                                  isSingleMark
+                                    ? "text-violet-600 bg-violet-50 border-violet-100"
+                                    : "text-orange-600 bg-orange-50 border-orange-100"
+                                }`}>
+                                  {comp.weightage}% ·{" "}
+                                  {isSingleMark
+                                    ? `one mark out of ${componentRawTotal(comp)}`
+                                    : `${compQs.length} Qs · ${componentRawTotal(comp)} marks`}
+                                  {" "}· {comp.scoreMode} · weighted out of {componentMax}
                                 </span>
                               </div>
 
@@ -1725,8 +1962,9 @@ export default function LecturerConsolePage() {
                                       <th className="px-4 py-3 w-10">#</th>
                                       <th className="px-4 py-3 w-32">Student ID</th>
                                       {compQs.map(q => (
-                                        <th key={q} className="px-2 py-3 text-center bg-orange-50/50 w-14">
-                                          {q}<span className="block text-[9px] text-neutral-400 font-normal">/{comp.marksPerQuestion}</span>
+                                        <th key={q} className={`px-2 py-3 text-center w-16 ${isSingleMark ? "bg-violet-50/60" : "bg-orange-50/50"}`}>
+                                          {isSingleMark ? "Mark" : q}
+                                          <span className="block text-[9px] text-neutral-400 font-normal">/{componentQuestionMax(comp, q)}</span>
                                         </th>
                                       ))}
                                       <th className="px-4 py-3 text-center bg-indigo-50/60 text-indigo-700 w-16">Total</th>
@@ -1738,9 +1976,9 @@ export default function LecturerConsolePage() {
                                     {visibleStudents.map(({ row, index }) => {
                                       const isAbsent = !!row.isAbsentCa[comp.id];
                                       const compMarks = row.caQuestionsMarks[comp.id] ?? {};
-                                      const total = computeRowTotal(compMarks, comp.questionsToAnswer, comp.scoreMode);
+                                      const total = computeRowTotal(compMarks, required, comp.scoreMode);
                                       const answered = enteredMarks(compMarks).length;
-                                      const short = !isAbsent && answered < comp.questionsToAnswer;
+                                      const short = !isAbsent && answered < required;
                                       const flagged = !isAbsent && problemIndexes.has(row.studentIndex);
 
                                       return (
@@ -1756,12 +1994,12 @@ export default function LecturerConsolePage() {
                                           </td>
                                           <td className="px-4 py-3 font-bold tracking-wider uppercase">{row.studentIndex}</td>
                                           {compQs.map(q => (
-                                            <td key={q} className="px-1.5 py-2 bg-orange-50/10 text-center">
+                                            <td key={q} className={`px-1.5 py-2 text-center ${isSingleMark ? "bg-violet-50/10" : "bg-orange-50/10"}`}>
                                               {isAbsent ? (
                                                 <span className="text-neutral-400 font-bold text-[11px]">AB</span>
                                               ) : (
                                                 <input
-                                                  type="number" min="0" max={comp.marksPerQuestion}
+                                                  type="number" min="0" max={componentQuestionMax(comp, q)}
                                                   value={compMarks[q] ?? ""}
                                                   placeholder="0"
                                                   disabled={isReadOnly || isAbsent}
@@ -1769,10 +2007,10 @@ export default function LecturerConsolePage() {
                                                   data-col={q}
                                                   data-row={index}
                                                   aria-label={`${row.studentIndex} ${q}`}
-                                                  onChange={e => updateCAMark(row.studentIndex, comp.id, q, Number(e.target.value), comp.marksPerQuestion)}
+                                                  onChange={e => updateCAMark(row.studentIndex, comp.id, q, Number(e.target.value), componentQuestionMax(comp, q))}
                                                   onKeyDown={e => handleCellKeyDown(e, `ca-${comp.id}`, q, index)}
                                                   onPaste={e => handleCaPaste(e, comp, index, q)}
-                                                  className={`w-12 bg-white border rounded py-1 text-center font-bold focus:outline-none focus:border-orange-400 disabled:opacity-40 ${short && !compMarks[q] ? "border-amber-300" : "border-neutral-200"}`}
+                                                  className={`w-14 bg-white border rounded py-1 text-center font-bold focus:outline-none disabled:opacity-40 ${isSingleMark ? "focus:border-violet-400" : "focus:border-orange-400"} ${short && !compMarks[q] ? "border-amber-300" : "border-neutral-200"}`}
                                                 />
                                               )}
                                             </td>
@@ -1819,6 +2057,9 @@ export default function LecturerConsolePage() {
 
                               {!isReadOnly && (
                                 <p className="text-[10px] text-neutral-400 mt-1.5">
+                                  {isSingleMark
+                                    ? "Group A — enter one overall mark per student. "
+                                    : "Group B — each column is capped at that question's own weightage. "}
                                   Tip: paste a block from Excel into any cell, and press <kbd className="px-1 rounded border border-neutral-200 bg-neutral-50">Enter</kbd> to jump down the column.
                                 </p>
                               )}

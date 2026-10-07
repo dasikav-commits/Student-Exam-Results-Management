@@ -4,11 +4,12 @@ import {
   asModuleStats,
   hasAnyMark,
   isLecturerLocked,
+  normaliseCaComponents,
   sanitiseMarkRow,
   toErrorMessage,
   type SanitisedRow,
 } from "@/lib/lecturer-marks";
-import type { CaComponent, FinalBlueprint } from "@/types/hod";
+import type { FinalBlueprint } from "@/types/hod";
 
 export const dynamic = "force-dynamic";
 
@@ -109,7 +110,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const caComponents = (currentStats.caComponents ?? []) as CaComponent[];
+    // Normalised so per-question maxima are known for both component groups.
+    const caComponents = normaliseCaComponents(currentStats.caComponents);
     const finalBlueprint = (currentStats.finalBlueprint ?? null) as FinalBlueprint | null;
 
     // ── Sanitise the payload against the current blueprint ───────────────────

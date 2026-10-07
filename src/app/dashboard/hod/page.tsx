@@ -6,6 +6,12 @@ import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import {
+  computeWeightedScores,
+  normaliseCaComponents,
+  type MarkRowLike,
+} from "@/lib/lecturer-marks";
+import type { CaComponent as SharedCaComponent, FinalBlueprint as SharedFinalBlueprint } from "@/types/hod";
+import {
   Users, BookOpen, Lock, Unlock, Loader2, Layers, TrendingUp, Shield,
   Edit3, X, GraduationCap, FileCheck, ChevronDown, AlertCircle, CheckCircle,
   Clock, ClipboardList, Eye, Sliders, Flame, LogOut, RefreshCcw, User
@@ -25,22 +31,10 @@ interface LecturerData {
   examModules: string[];
 }
 
-interface HodCaComponent {
-  id: string;
-  name: string;
-  weightage: number;
-  questionsToAnswer: number;
-  marksPerQuestion: number;
-  scoreMode: "SUM" | "AVG";
-}
-
-interface HodFinalBlueprint {
-  enabled: boolean;
-  weightage: number;
-  questionsToAnswer: number;
-  marksPerQuestion: number;
-  scoreMode: "SUM" | "AVG";
-}
+// CA blueprints are authored on the Lecturer Desk; the HOD Console reads them
+// through the shared marks engine so both desks always agree on the numbers.
+type HodCaComponent = SharedCaComponent;
+type HodFinalBlueprint = SharedFinalBlueprint;
 
 interface ModuleData {
   id: number;
@@ -59,48 +53,28 @@ interface ModuleData {
 }
 
 // ─── Total Calculation Helper ─────────────────────────────────────────────────
+/**
+ * Weighted module mark for one student, computed by the same engine that powers
+ * the Lecturer Desk grids and the CSV export — this used to be a copy of that
+ * maths, which silently disagreed with the Lecturer Desk for Group A
+ * components (project / presentation / lab report) and for any question whose
+ * weightage differed from the component average.
+ *
+ * The Examiner's marks take precedence over the lecturer's for the final paper.
+ */
 function calcStudentTotal(
   student: any,
   caComponents: HodCaComponent[],
   finalBlueprint: HodFinalBlueprint | undefined
 ): { caTotal: number; examTotal: number; grandTotal: number } {
-  // ── CA ────────────────────────────────────────────────────────────────────
-  let caTotal = 0;
-  for (const comp of caComponents) {
-    const absent = student.isAbsentCa?.[comp.id] === true;
-    if (absent) continue;
-    const raw: Record<string, number> = student.caQuestionsMarks?.[comp.id] ?? {};
-    const vals = Object.values(raw).slice(0, comp.questionsToAnswer);
-    const sum = vals.reduce((a, b) => a + (Number(b) || 0), 0);
-    const rawScore = comp.scoreMode === "AVG" && comp.questionsToAnswer > 0
-      ? sum / comp.questionsToAnswer
-      : sum;
-    const maxRaw = comp.scoreMode === "AVG"
-      ? comp.marksPerQuestion
-      : comp.marksPerQuestion * comp.questionsToAnswer;
-    if (maxRaw > 0) caTotal += (rawScore / maxRaw) * comp.weightage;
-  }
+  const components = normaliseCaComponents(caComponents);
 
-  // ── Exam ─────────────────────────────────────────────────────────────────
-  let examTotal = 0;
-  if (finalBlueprint?.enabled && !student.isAbsentFinal) {
-    // Prefer examiner's marks (secondExamMarks); fall back to lecturer's
-    const examRaw: Record<string, number> =
-      (Object.keys(student.secondExamMarks ?? {}).length > 0
-        ? student.secondExamMarks
-        : student.finalExamQuestionsMarks) ?? {};
-    const vals = Object.values(examRaw).slice(0, finalBlueprint.questionsToAnswer);
-    const sum = vals.reduce((a, b) => a + (Number(b) || 0), 0);
-    const rawScore = finalBlueprint.scoreMode === "AVG" && finalBlueprint.questionsToAnswer > 0
-      ? sum / finalBlueprint.questionsToAnswer
-      : sum;
-    const maxRaw = finalBlueprint.scoreMode === "AVG"
-      ? finalBlueprint.marksPerQuestion
-      : finalBlueprint.marksPerQuestion * finalBlueprint.questionsToAnswer;
-    if (maxRaw > 0) examTotal = (rawScore / maxRaw) * finalBlueprint.weightage;
-  }
+  const examSource = Object.keys(student?.secondExamMarks ?? {}).length > 0
+    ? { ...student, finalExamQuestionsMarks: student.secondExamMarks }
+    : student;
 
-  return { caTotal, examTotal, grandTotal: caTotal + examTotal };
+  const weighted = computeWeightedScores(examSource as MarkRowLike, components, finalBlueprint);
+  return { caTotal: weighted.ca, examTotal: weighted.final, grandTotal: weighted.total };
 }
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────

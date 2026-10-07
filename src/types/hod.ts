@@ -2,16 +2,47 @@
 // Shared TypeScript types for the Wayamba Exam Portal
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * CA components come in two structural flavours, decided by their type:
+ *
+ *  • GROUP A — practical / performance work (PROJECT, PRESENTATION, LAB_REPORT).
+ *    Scored as one mark for the whole component, out of `totalMarks`.
+ *
+ *  • GROUP B — written / discrete assessments (QUIZ, ASSIGNMENT, MIDTERM, TUTORIAL).
+ *    Scored question by question, where every question carries its own weightage
+ *    (marks) in `questionMarks`, aligned to Q1…Qn.
+ *
+ * The group is derived from `type` (see `caGroupOf` in @/lib/lecturer-marks) and
+ * mirrored onto the stored object so a component keeps its scoring shape even if
+ * its type is later re-labelled.
+ */
+export type CaGroup = "A" | "B";
+
 /** A single CA component in a module's blueprint */
 export interface CaComponent {
   id: string;
-  type: string;              // e.g. "QUIZ", "ASSIGNMENT", "MIDTERM"
+  type: string;              // e.g. "QUIZ", "PROJECT", "LAB_REPORT"
   name: string;
   weightage: number;         // % (contributes to 100% total with finalBlueprint)
-  totalQuestions: number;
-  marksPerQuestion: number;
-  questionsToAnswer: number; // must be <= totalQuestions
   scoreMode: "SUM" | "AVG";
+  /** Scoring shape — always written by the Lecturer Desk. */
+  group?: CaGroup;
+
+  // ── Group A fields ────────────────────────────────────────────────────────
+  /** Total marks obtainable for the whole component (e.g. 100). */
+  totalMarks?: number;
+
+  // ── Group B fields ────────────────────────────────────────────────────────
+  /** Number of questions on the paper. */
+  totalQuestions?: number;
+  /** Per-question weightage (marks), index 0 → Q1. Length matches totalQuestions. */
+  questionMarks?: number[];
+
+  // ── Derived / legacy (kept so older stored blueprints keep working) ───────
+  /** Derived: the highest per-question weightage (Group B) or totalMarks (Group A). */
+  marksPerQuestion?: number;
+  /** Derived: how many answers the student must provide (Group A → 1). */
+  questionsToAnswer?: number;
 }
 
 /** Final exam blueprint block */
