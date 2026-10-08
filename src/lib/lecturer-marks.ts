@@ -266,11 +266,14 @@ export function normaliseFinalBlueprint(raw: unknown, legacyTemplate?: unknown):
     const mcq = theorySource.mcq ?? theorySource.MCQ ?? source.mcq;
     const essay = theorySource.essay ?? theorySource.Essay ?? source.essay;
     const practical = source.practical ?? sections.practical;
+    const mcqSection = normaliseFinalSection(mcq);
     return {
       enabled: source.enabled === true,
       weightage: finiteNumber(source.weightage, 0),
       theory: {
-        mcq: normaliseFinalSection(mcq),
+        // MCQ is all-compulsory. Silently upgrade historical partial-answer
+        // values whenever a stored blueprint is read.
+        mcq: { ...mcqSection, questionsToAnswer: mcqSection.questions.length },
         essay: normaliseFinalSection(essay),
       },
       practical: normaliseFinalSection(practical),

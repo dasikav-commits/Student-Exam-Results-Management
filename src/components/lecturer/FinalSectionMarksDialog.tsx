@@ -180,11 +180,6 @@ export function FinalSectionMarksDialog({
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="h-7 min-w-7 px-1 rounded-lg bg-neutral-100 text-neutral-700 flex items-center justify-center text-[10px] font-black">{question.id}</span>
                       <span className="text-[11px] font-semibold text-neutral-700">Maximum {question.maxMarks}</span>
-                      {counted ? (
-                        <span className="text-[9px] uppercase tracking-wide font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded">Required</span>
-                      ) : (
-                        <span className="text-[9px] uppercase tracking-wide font-bold text-neutral-500 bg-neutral-100 px-1.5 py-0.5 rounded">Optional</span>
-                      )}
                     </div>
                     <div className="flex items-center gap-2 sm:justify-end">
                       <span className="sm:hidden text-[10px] font-bold uppercase text-neutral-500">Lecturer</span>

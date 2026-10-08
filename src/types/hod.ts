@@ -56,7 +56,7 @@ export interface FinalQuestionDescriptor {
 
 export interface FinalSectionBlueprint {
   questions: FinalQuestionDescriptor[];
-  /** First N questions are required; defaults to all configured questions. */
+  /** First N questions are required; MCQ always requires every configured question. */
   questionsToAnswer: number;
 }
 
@@ -131,6 +131,8 @@ export interface DepartmentModule {
   code: string;
   name: string;
   credits: number;
+  /** Cohort size authorised by the HOD for this module. */
+  eligibleStudents: number;
   isFrozen: boolean;
   activeLecturerId?: number | null;
   examLecturerId?: number | null;
