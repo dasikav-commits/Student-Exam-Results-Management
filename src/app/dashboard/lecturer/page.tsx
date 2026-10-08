@@ -1079,7 +1079,7 @@ export default function LecturerConsolePage() {
         ? "border-violet-200 bg-violet-50/50 text-violet-800"
         : "border-amber-200 bg-amber-50/50 text-amber-800";
     return (
-      <section key={setup.key} className={`rounded-xl border p-4 space-y-3 ${tone}`}>
+      <section key={setup.key} className={`min-w-0 rounded-xl border p-4 space-y-3 ${tone}`}>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h4 className="text-sm font-black">{setup.label}</h4>
@@ -1115,23 +1115,42 @@ export default function LecturerConsolePage() {
           </label>
         </div>
         {section.questions.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
-            {section.questions.map((question, index) => (
-              <label key={`${question.id}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-white/80 bg-white/80 px-3 py-2 text-xs font-bold text-neutral-700">
-                <span>{question.id}<span className="ml-1 text-[9px] font-medium text-neutral-400">{index < section.questionsToAnswer ? "required" : "optional"}</span></span>
-                <span className="flex items-center gap-1.5 text-[10px] text-neutral-500">Max
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={question.maxMarks || ""}
-                    aria-label={`${setup.label} ${question.id} maximum marks`}
-                    onChange={event => updateFinalQuestionMax(setup.key, index, event.target.value)}
-                    className="w-20 rounded-md border border-neutral-200 bg-white px-2 py-1 text-right text-xs font-black text-neutral-800 focus:border-emerald-500 focus:outline-none"
-                  />
-                </span>
-              </label>
-            ))}
+          <div className="overflow-hidden rounded-xl border border-white/80 bg-white">
+            <div className="flex flex-wrap items-center gap-2 border-b border-neutral-100 bg-neutral-50/80 px-3 py-2">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                Maximum per question
+              </span>
+              <span className="text-[10px] text-neutral-400">
+                {section.questions.length} question{section.questions.length === 1 ? "" : "s"} · answer {section.questionsToAnswer}
+              </span>
+            </div>
+            <div className="divide-y divide-neutral-100 max-h-72 overflow-y-auto">
+              {section.questions.map((question, index) => {
+                const isRequired = index < section.questionsToAnswer;
+                return (
+                  <div key={`${question.id}-${index}`} className="grid grid-cols-[minmax(0,1fr)_6.5rem] items-center gap-3 px-3 py-1.5">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="w-10 shrink-0 text-[11px] font-black text-neutral-600">{question.id}</span>
+                      {isRequired ? (
+                        <span className="rounded border border-emerald-100 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-700">Required</span>
+                      ) : (
+                        <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-neutral-500">Optional</span>
+                      )}
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={question.maxMarks || ""}
+                      aria-label={`${setup.label} ${question.id} maximum marks`}
+                      onChange={event => updateFinalQuestionMax(setup.key, index, event.target.value)}
+                      placeholder="10"
+                      className="w-full rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-right text-xs font-black text-neutral-800 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                );
+              })}
+            </div>
           </div>
         ) : (
           <p className="rounded-lg border border-dashed border-neutral-300 bg-white/60 px-3 py-4 text-center text-xs text-neutral-500">Set the question count to configure this section.</p>
@@ -1880,22 +1899,22 @@ export default function LecturerConsolePage() {
                               </div>
                             </div>
 
-                            <div className="rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 space-y-3">
+                            <div className="min-w-0 rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 space-y-3">
                               <div>
                                 <h4 className="text-xs font-black uppercase tracking-wider text-neutral-700">Theory</h4>
                                 <p className="text-[10px] text-neutral-500 mt-0.5">Absence is recorded once for this parent and covers both MCQ and Essay.</p>
                               </div>
-                              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                              <div className="grid min-w-0 grid-cols-1 xl:grid-cols-2 gap-3">
                                 {FINAL_SECTION_SETUP.filter(section => section.parent === "theory").map(renderFinalSectionEditor)}
                               </div>
                             </div>
 
-                            <div className="rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 space-y-3">
+                            <div className="min-w-0 rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 space-y-3">
                               <div>
                                 <h4 className="text-xs font-black uppercase tracking-wider text-neutral-700">Practical</h4>
                                 <p className="text-[10px] text-neutral-500 mt-0.5">Practical has its own question list and its own parent-level absence status.</p>
                               </div>
-                              <div className="grid grid-cols-1 gap-3">
+                              <div className="grid min-w-0 grid-cols-1 gap-3">
                                 {FINAL_SECTION_SETUP.filter(section => section.parent === "practical").map(renderFinalSectionEditor)}
                               </div>
                             </div>
