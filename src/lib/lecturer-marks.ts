@@ -19,16 +19,27 @@
 //       (marks) row for every question, Score Mode.
 //     → One mark per question, each with its own maximum.
 //
-// Scoring semantics stay identical to the Second Examiner desk so variance
+// CA scoring semantics stay identical to the Second Examiner desk so variance
 // comparisons remain meaningful:
 //   • Only the first `questionsToAnswer` answered questions count, ordered
 //     naturally (Q1, Q2, … Q10 — never Q1, Q10, Q2). JSONB does not preserve
 //     key order, so relying on it made totals unstable across reloads.
 //   • SUM  → sum of those answers.
 //   • AVG  → that sum divided by `questionsToAnswer`.
+// Final-paper scoring is sectioned and weighted by required maximum marks below.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { CaComponent, CaGroup, FinalBlueprint, ModuleStats } from "@/types/hod";
+import type {
+  CaComponent,
+  CaGroup,
+  FinalBlueprint,
+  FinalPaperMarks,
+  FinalParentSection,
+  FinalQuestionDescriptor,
+  FinalSectionBlueprint,
+  FinalSectionKey,
+  ModuleStats,
+} from "@/types/hod";
 
 // ─── Small utilities ─────────────────────────────────────────────────────────
 
@@ -182,6 +193,289 @@ export function normaliseCaComponents(list: unknown): CaComponent[] {
   return Array.isArray(list) ? list.map(normaliseCaComponent) : [];
 }
 
+// ─── Final-paper blueprint and marks normalisation ────────────────────────────
+
+const FINAL_SECTION_KEYS: readonly FinalSectionKey[] = ["mcq", "essay", "practical"];
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function normaliseFinalSection(raw: unknown): FinalSectionBlueprint {
+  const source = Array.isArray(raw) ? { questions: raw } : asRecord(raw);
+  let questionsRaw = Array.isArray(source.questions) ? source.questions : [];
+
+  // Be liberal when reading early sectioned prototypes that stored the count
+  // and a uniform maximum instead of explicit question descriptors.
+  if (questionsRaw.length === 0) {
+    const count = positiveInt(source.totalQuestions) ?? 0;
+    const questionMarks = Array.isArray(source.questionMarks) ? source.questionMarks : [];
+    const uniformMax = finiteNumber(source.marksPerQuestion, 0);
+    questionsRaw = Array.from({ length: count }, (_, index) => ({
+      id: `Q${index + 1}`,
+      maxMarks: finiteNumber(questionMarks[index], uniformMax),
+    }));
+  }
+
+  const questions: FinalQuestionDescriptor[] = questionsRaw.map((item, index) => {
+    const question = asRecord(item);
+    const id = typeof question.id === "string" && question.id.trim()
+      ? question.id.trim()
+      : `Q${index + 1}`;
+    const questionMaxes = Array.isArray(source.questionMarks) ? source.questionMarks : [];
+    const maxMarks = finiteNumber(
+      question.maxMarks ?? question.maximumMarks ?? question.marks,
+      finiteNumber(questionMaxes[index], finiteNumber(source.marksPerQuestion, 0))
+    );
+    return { id, maxMarks };
+  });
+
+  const requestedRequired = source.questionsToAnswer ?? source.requiredQuestions ?? source.requiredQuestionCount;
+  const requiredValue = Number(requestedRequired);
+  const questionsToAnswer = questions.length === 0
+    ? 0
+    : Number.isInteger(requiredValue) && requiredValue > 0
+      ? Math.min(questions.length, requiredValue)
+      : questions.length;
+
+  return { questions, questionsToAnswer };
+}
+
+/**
+ * Upgrade both the sectioned blueprint and the former flat Q1…Qn blueprint to
+ * one canonical shape. Legacy questions are assigned to Theory → Essay.
+ */
+export function normaliseFinalBlueprint(raw: unknown, legacyTemplate?: unknown): FinalBlueprint {
+  const source = asRecord(raw);
+  const template = Array.isArray(legacyTemplate) ? legacyTemplate.map(asRecord) : [];
+  const templateHasQuestion = template.length > 0;
+  const sections = asRecord(source.sections);
+  const theorySource = asRecord(source.theory ?? sections.theory);
+  const structured =
+    source.theory !== undefined || source.practical !== undefined || source.sections !== undefined ||
+    source.mcq !== undefined || source.essay !== undefined;
+
+  if (structured) {
+    const mcq = theorySource.mcq ?? theorySource.MCQ ?? source.mcq;
+    const essay = theorySource.essay ?? theorySource.Essay ?? source.essay;
+    const practical = source.practical ?? sections.practical;
+    return {
+      enabled: source.enabled === true,
+      weightage: finiteNumber(source.weightage, 0),
+      theory: {
+        mcq: normaliseFinalSection(mcq),
+        essay: normaliseFinalSection(essay),
+      },
+      practical: normaliseFinalSection(practical),
+    };
+  }
+
+  const legacyCount = positiveInt(source.totalQuestions) ?? (templateHasQuestion ? template.length : 0);
+  const legacyPerQuestion = finiteNumber(source.marksPerQuestion, 0);
+  const legacyQuestionMarks = Array.isArray(source.questionMarks) ? source.questionMarks : [];
+  const essayQuestions: FinalQuestionDescriptor[] = Array.from({ length: legacyCount }, (_, index) => {
+    const templateQuestion = template.find(question => question.id === `Q${index + 1}`) ?? template[index];
+    return {
+      id: `Q${index + 1}`,
+      maxMarks: finiteNumber(
+        templateQuestion?.maxMarks,
+        finiteNumber(legacyQuestionMarks[index], legacyPerQuestion)
+      ),
+    };
+  });
+  const legacyRequired = positiveInt(source.questionsToAnswer) ?? legacyCount;
+  const essay: FinalSectionBlueprint = {
+    questions: essayQuestions,
+    questionsToAnswer: essayQuestions.length === 0
+      ? 0
+      : Math.min(essayQuestions.length, legacyRequired),
+  };
+
+  return {
+    enabled: source.enabled === true,
+    weightage: finiteNumber(source.weightage, 0),
+    theory: {
+      mcq: { questions: [], questionsToAnswer: 0 },
+      essay,
+    },
+    practical: { questions: [], questionsToAnswer: 0 },
+  };
+}
+
+export interface FinalPaperSectionInfo {
+  key: FinalSectionKey;
+  parent: FinalParentSection;
+  label: string;
+  blueprint: FinalSectionBlueprint;
+}
+
+export function getFinalPaperSections(blueprint: FinalBlueprint): FinalPaperSectionInfo[] {
+  return [
+    { key: "mcq", parent: "theory", label: "Theory · MCQ", blueprint: blueprint.theory.mcq },
+    { key: "essay", parent: "theory", label: "Theory · Essay", blueprint: blueprint.theory.essay },
+    { key: "practical", parent: "practical", label: "Practical", blueprint: blueprint.practical },
+  ];
+}
+
+export function getFinalSectionBlueprint(
+  blueprint: FinalBlueprint,
+  key: FinalSectionKey
+): FinalSectionBlueprint {
+  return key === "practical" ? blueprint.practical : blueprint.theory[key];
+}
+
+export function getFinalSectionParent(key: FinalSectionKey): FinalParentSection {
+  return key === "practical" ? "practical" : "theory";
+}
+
+export function finalSectionQuestionMax(section: FinalSectionBlueprint, questionId: string): number {
+  return finiteNumber(section.questions.find(question => question.id === questionId)?.maxMarks, 0);
+}
+
+export function finalSectionRequiredCount(section: FinalSectionBlueprint): number {
+  const count = section.questions.length;
+  if (count === 0) return 0;
+  const required = positiveInt(section.questionsToAnswer);
+  return required ? Math.min(count, required) : count;
+}
+
+/** Maximum marks required from a section (sum of the first required questions). */
+export function finalSectionMaxScore(section: FinalSectionBlueprint): number {
+  return section.questions
+    .slice(0, finalSectionRequiredCount(section))
+    .reduce((sum, question) => sum + Math.max(0, finiteNumber(question.maxMarks, 0)), 0);
+}
+
+export function finalMaxScore(blueprint?: FinalBlueprint | null): number {
+  if (!blueprint) return 0;
+  const normalised = normaliseFinalBlueprint(blueprint);
+  return getFinalPaperSections(normalised)
+    .reduce((sum, section) => sum + finalSectionMaxScore(section.blueprint), 0);
+}
+
+export function finalSectionWeightage(blueprint: FinalBlueprint, key: FinalSectionKey): number {
+  const totalMax = finalMaxScore(blueprint);
+  if (totalMax <= 0) return 0;
+  return (finalSectionMaxScore(getFinalSectionBlueprint(blueprint, key)) / totalMax)
+    * (Number(blueprint.weightage) || 0);
+}
+
+export function buildFinalExamTemplate(blueprint: FinalBlueprint): {
+  id: string;
+  maxMarks: number;
+  section: FinalSectionKey;
+  parent: FinalParentSection;
+}[] {
+  return getFinalPaperSections(blueprint).flatMap(({ key, parent, blueprint: section }) =>
+    section.questions.map(question => ({
+      id: question.id,
+      maxMarks: question.maxMarks,
+      section: key,
+      parent,
+    }))
+  );
+}
+
+export interface FinalAbsenceState {
+  isAbsentTheory: boolean;
+  isAbsentPractical: boolean;
+  isAbsentFinal: boolean;
+}
+
+/** Legacy isAbsentFinal=true means both parents are absent unless new flags exist. */
+export function normaliseFinalAbsence(row: {
+  isAbsentTheory?: boolean | null;
+  isAbsentPractical?: boolean | null;
+  isAbsentFinal?: boolean | null;
+} | null | undefined): FinalAbsenceState {
+  const hasParentFlags = (row?.isAbsentTheory !== undefined && row?.isAbsentTheory !== null)
+    || (row?.isAbsentPractical !== undefined && row?.isAbsentPractical !== null);
+  const legacyAbsent = row?.isAbsentFinal === true;
+  // After schema sync old whole-paper absence rows may have new columns at the
+  // default false value. Preserve that legacy meaning until either parent is
+  // explicitly marked absent/present by the new workflow.
+  const legacyWholePaperAbsent = legacyAbsent
+    && row?.isAbsentTheory !== true
+    && row?.isAbsentPractical !== true;
+  const isAbsentTheory = legacyWholePaperAbsent || (hasParentFlags
+    ? row?.isAbsentTheory === true
+    : legacyAbsent);
+  const isAbsentPractical = legacyWholePaperAbsent || (hasParentFlags
+    ? row?.isAbsentPractical === true
+    : legacyAbsent);
+  return {
+    isAbsentTheory,
+    isAbsentPractical,
+    isAbsentFinal: isAbsentTheory && isAbsentPractical,
+  };
+}
+
+export function isFinalParentAbsent(
+  row: { isAbsentTheory?: boolean | null; isAbsentPractical?: boolean | null; isAbsentFinal?: boolean | null },
+  parent: FinalParentSection
+): boolean {
+  const absence = normaliseFinalAbsence(row);
+  return parent === "theory" ? absence.isAbsentTheory : absence.isAbsentPractical;
+}
+
+export function getFinalSectionMarks(marks: unknown, key: FinalSectionKey): Record<string, unknown> {
+  const source = asRecord(marks);
+  const theory = asRecord(source.theory);
+  const section = key === "practical" ? source.practical : theory[key] ?? source[key];
+  const sectionRecord = asRecord(section);
+  if (sectionRecord.marks && typeof sectionRecord.marks === "object") return asRecord(sectionRecord.marks);
+  if (sectionRecord.questions && typeof sectionRecord.questions === "object" && !Array.isArray(sectionRecord.questions)) {
+    return asRecord(sectionRecord.questions);
+  }
+  return sectionRecord;
+}
+
+/**
+ * Convert old flat Q1…Qn marks to the Essay section, even after the blueprint
+ * itself has already been upgraded and no longer has legacy top-level fields.
+ */
+export function normaliseFinalMarks(marks: unknown, blueprintInput: unknown): FinalPaperMarks {
+  const blueprint = normaliseFinalBlueprint(blueprintInput);
+  const source = asRecord(marks);
+  const theory = asRecord(source.theory);
+  const hasSectionedMarks = source.theory !== undefined || source.practical !== undefined
+    || source.mcq !== undefined || source.essay !== undefined;
+
+  const rawMcq = hasSectionedMarks ? (theory.mcq ?? source.mcq) : {};
+  const rawEssay = hasSectionedMarks ? (theory.essay ?? source.essay) : source;
+  const rawPractical = hasSectionedMarks ? source.practical : {};
+
+  const maximaFor = (section: FinalSectionBlueprint): Record<string, number> =>
+    Object.fromEntries(section.questions.map(question => [question.id, question.maxMarks]));
+
+  return {
+    theory: {
+      mcq: sanitiseQuestionMap(rawMcq, maximaFor(blueprint.theory.mcq)),
+      essay: sanitiseQuestionMap(rawEssay, maximaFor(blueprint.theory.essay)),
+    },
+    practical: sanitiseQuestionMap(rawPractical, maximaFor(blueprint.practical)),
+  };
+}
+
+export function normaliseFinalMarkRow(row: MarkRowLike, blueprintInput: unknown): {
+  finalExamQuestionsMarks: FinalPaperMarks;
+  secondExamMarks: FinalPaperMarks;
+} & FinalAbsenceState {
+  const blueprint = normaliseFinalBlueprint(blueprintInput);
+  return {
+    finalExamQuestionsMarks: normaliseFinalMarks(row.finalExamQuestionsMarks, blueprint),
+    secondExamMarks: normaliseFinalMarks(row.secondExamMarks, blueprint),
+    ...normaliseFinalAbsence(row),
+  };
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 export const MARKSHEET_STATUSES = [
@@ -240,9 +534,13 @@ export function isLecturerLocked(status?: string | null): boolean {
 export interface MarkRowLike {
   studentIndex: string;
   caQuestionsMarks?: Record<string, Record<string, number>> | null;
-  finalExamQuestionsMarks?: Record<string, number> | null;
-  secondExamMarks?: Record<string, number> | null;
+  /** Structured section marks, or a legacy flat Q1…Qn map before normalisation. */
+  finalExamQuestionsMarks?: unknown;
+  secondExamMarks?: unknown;
   isAbsentCa?: Record<string, boolean> | null;
+  isAbsentTheory?: boolean | null;
+  isAbsentPractical?: boolean | null;
+  /** Compatibility summary for old stored rows and integrations. */
   isAbsentFinal?: boolean | null;
   /** Cohort eligibility — rows without the flag (pre-migration) count as eligible. */
   isEligible?: boolean | null;
@@ -284,7 +582,7 @@ function questionNumber(key: string): number {
 }
 
 /** A blank cell is anything that is null/undefined/""/not a finite number. */
-function toFiniteNumber(value: unknown): number | null {
+export function toFiniteNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -305,8 +603,13 @@ export function answeredCount(marks?: Record<string, unknown> | null): number {
   return enteredMarks(marks).length;
 }
 
-export function hasAnyMark(marks?: Record<string, unknown> | null): boolean {
-  return answeredCount(marks) > 0;
+export function hasAnyMark(marks?: unknown): boolean {
+  if (!marks || typeof marks !== "object" || Array.isArray(marks)) return false;
+  const source = marks as Record<string, unknown>;
+  if (enteredMarks(source).length > 0) return true;
+  return Object.values(source).some(value =>
+    !!value && typeof value === "object" && hasAnyMark(value)
+  );
 }
 
 // ─── Component geometry (works on normalised OR legacy components) ───────────
@@ -360,9 +663,94 @@ export function componentRawTotal(comp: CaComponent): number {
   return marks.reduce((sum, value) => sum + (Number(value) || 0), 0);
 }
 
-export function finalMaxScore(bp?: Pick<FinalBlueprint, "questionsToAnswer" | "marksPerQuestion"> | null): number {
-  if (!bp) return 0;
-  return (Math.max(0, Number(bp.questionsToAnswer) || 0)) * (Math.max(0, Number(bp.marksPerQuestion) || 0));
+export interface FinalPaperTotals {
+  /** Raw totals per question section, before absence is applied. */
+  sectionRaw: Record<FinalSectionKey, number>;
+  sectionMax: Record<FinalSectionKey, number>;
+  sectionWeighted: Record<FinalSectionKey, number>;
+  /** Raw sum from sections the student attended. */
+  rawTotal: number;
+  maxTotal: number;
+  /** Weighted Final Paper contribution, out of the overall blueprint weightage. */
+  weighted: number;
+}
+
+/** Raw score for the required questions of one final-paper section. */
+export function computeFinalSectionTotal(
+  marks: unknown,
+  section: FinalSectionBlueprint
+): number {
+  return section.questions
+    .slice(0, finalSectionRequiredCount(section))
+    .reduce((sum, question) => {
+      const value = toFiniteNumber(asRecord(marks)[question.id]);
+      if (value === null) return sum;
+      const max = Math.max(0, finiteNumber(question.maxMarks, 0));
+      return sum + Math.min(max > 0 ? max : value, Math.max(0, value));
+    }, 0);
+}
+
+/**
+ * Final-paper raw and weighted totals. Each section gets a share of the single
+ * Final Paper weightage proportional to its required maximum marks. Thus the
+ * weighted result is equivalent to scoring the whole paper out of its combined
+ * configured maximum, while making the MCQ / Essay / Practical shares explicit.
+ */
+export function computeFinalPaperTotals(
+  row: MarkRowLike,
+  blueprintInput?: FinalBlueprint | null,
+  marksInput?: unknown
+): FinalPaperTotals {
+  const blueprint = normaliseFinalBlueprint(blueprintInput);
+  const marks = normaliseFinalMarks(
+    marksInput === undefined ? row.finalExamQuestionsMarks : marksInput,
+    blueprint
+  );
+  const absence = normaliseFinalAbsence(row);
+  const sectionRaw = {} as Record<FinalSectionKey, number>;
+  const sectionMax = {} as Record<FinalSectionKey, number>;
+  const sectionWeighted = {} as Record<FinalSectionKey, number>;
+  const sectionBlueprints: Record<FinalSectionKey, FinalSectionBlueprint> = {
+    mcq: blueprint.theory.mcq,
+    essay: blueprint.theory.essay,
+    practical: blueprint.practical,
+  };
+  const parentAbsent: Record<FinalSectionKey, boolean> = {
+    mcq: absence.isAbsentTheory,
+    essay: absence.isAbsentTheory,
+    practical: absence.isAbsentPractical,
+  };
+  const totalMax = getFinalPaperSections(blueprint)
+    .reduce((sum, section) => sum + finalSectionMaxScore(section.blueprint), 0);
+  let rawTotal = 0;
+  let weighted = 0;
+
+  for (const key of FINAL_SECTION_KEYS) {
+    const section = sectionBlueprints[key];
+    const max = finalSectionMaxScore(section);
+    const raw = computeFinalSectionTotal(getFinalSectionMarks(marks, key), section);
+    const contributionMax = totalMax > 0
+      ? (max / totalMax) * (Number(blueprint.weightage) || 0)
+      : 0;
+    const contribution = !parentAbsent[key] && max > 0
+      ? (Math.min(Math.max(raw, 0), max) / max) * contributionMax
+      : 0;
+
+    sectionRaw[key] = round1(raw);
+    sectionMax[key] = round1(max);
+    sectionWeighted[key] = round1(contribution);
+    if (!parentAbsent[key]) rawTotal += raw;
+    weighted += contribution;
+  }
+
+  return {
+    sectionRaw,
+    sectionMax,
+    sectionWeighted,
+    rawTotal: round1(rawTotal),
+    maxTotal: round1(totalMax),
+    weighted: round1(weighted),
+  };
 }
 
 // ─── Core scoring ────────────────────────────────────────────────────────────
@@ -427,13 +815,9 @@ export function computeWeightedScores(
   let final = 0;
   let finalMax = 0;
   if (finalBlueprint?.enabled) {
-    const weight = Number(finalBlueprint.weightage) || 0;
-    finalMax = weight;
-    const max = finalMaxScore(finalBlueprint);
-    if (!row.isAbsentFinal && max > 0) {
-      const raw = computeRowTotal(row.finalExamQuestionsMarks ?? {}, finalBlueprint.questionsToAnswer, finalBlueprint.scoreMode);
-      final = (Math.min(Math.max(raw, 0), max) / max) * weight;
-    }
+    const blueprint = normaliseFinalBlueprint(finalBlueprint);
+    finalMax = Number(blueprint.weightage) || 0;
+    final = computeFinalPaperTotals(row, blueprint).weighted;
   }
 
   return {
@@ -468,10 +852,17 @@ export function computeRowProgress(
     filled += Math.min(answeredCount(row.caQuestionsMarks?.[comp.id] ?? {}), need);
   }
 
-  if (finalBlueprint?.enabled && !row.isAbsentFinal) {
-    const need = Math.max(1, Number(finalBlueprint.questionsToAnswer) || 1);
-    required += need;
-    filled += Math.min(answeredCount(row.finalExamQuestionsMarks ?? {}), need);
+  if (finalBlueprint?.enabled) {
+    const blueprint = normaliseFinalBlueprint(finalBlueprint);
+    const marks = normaliseFinalMarks(row.finalExamQuestionsMarks, blueprint);
+    const absence = normaliseFinalAbsence(row);
+    for (const section of getFinalPaperSections(blueprint)) {
+      if (section.parent === "theory" ? absence.isAbsentTheory : absence.isAbsentPractical) continue;
+      const requiredQuestions = section.blueprint.questions.slice(0, finalSectionRequiredCount(section.blueprint));
+      required += requiredQuestions.length;
+      const sectionMarks = getFinalSectionMarks(marks, section.key);
+      filled += requiredQuestions.filter(question => toFiniteNumber(sectionMarks[question.id]) !== null).length;
+    }
   }
 
   const percent = required === 0 ? 100 : Math.round((filled / required) * 100);
@@ -500,18 +891,19 @@ export function validateMarksheet(
 ): MarksheetIssue[] {
   const issues: MarksheetIssue[] = [];
   const comps = caComponents ?? [];
+  const finalBp = normaliseFinalBlueprint(finalBlueprint);
 
   // ── Module-level structure ────────────────────────────────────────────────
   if (rows.length === 0) {
     issues.push({ level: "error", message: "No students have been added to this marksheet." });
   }
-  if (comps.length === 0 && !finalBlueprint?.enabled) {
+  if (comps.length === 0 && !finalBp.enabled) {
     issues.push({ level: "error", message: "The blueprint is empty — define CA components or enable the final paper first." });
   }
 
   const caWeight = comps.reduce((sum, c) => sum + (Number(c.weightage) || 0), 0);
-  const finalWeight = finalBlueprint?.enabled ? Number(finalBlueprint.weightage) || 0 : 0;
-  if (comps.length > 0 || finalBlueprint?.enabled) {
+  const finalWeight = finalBp.enabled ? Number(finalBp.weightage) || 0 : 0;
+  if (comps.length > 0 || finalBp.enabled) {
     if (Math.abs(caWeight + finalWeight - 100) > 0.001) {
       issues.push({
         level: "error",
@@ -550,12 +942,32 @@ export function validateMarksheet(
     }
   });
 
-  if (finalBlueprint?.enabled) {
-    if (!(Number(finalBlueprint.marksPerQuestion) > 0)) {
-      issues.push({ level: "error", message: "Final paper: marks per question must be greater than 0." });
+  if (finalBp.enabled) {
+    const configuredQuestions = getFinalPaperSections(finalBp)
+      .reduce((sum, section) => sum + section.blueprint.questions.length, 0);
+    if (configuredQuestions === 0) {
+      issues.push({ level: "error", message: "Final paper: add at least one question to MCQ, Essay, or Practical." });
     }
-    if (Number(finalBlueprint.questionsToAnswer) > Number(finalBlueprint.totalQuestions)) {
-      issues.push({ level: "error", message: "Final paper: the number of questions to answer exceeds the total questions." });
+    for (const section of getFinalPaperSections(finalBp)) {
+      const { blueprint, label } = section;
+      const required = finalSectionRequiredCount(blueprint);
+      if (blueprint.questions.length > 50) {
+        issues.push({ level: "error", message: `${label}: no more than 50 questions can be configured.` });
+      }
+      if (blueprint.questions.length > 0 && (required < 1 || required > blueprint.questions.length)) {
+        issues.push({ level: "error", message: `${label}: required question count must be between 1 and the configured question count.` });
+      }
+      const seenQuestionIds = new Set<string>();
+      for (const question of blueprint.questions) {
+        if (!question.id.trim() || seenQuestionIds.has(question.id)) {
+          issues.push({ level: "error", message: `${label}: question IDs must be present and unique.` });
+          break;
+        }
+        seenQuestionIds.add(question.id);
+        if (!(Number(question.maxMarks) > 0)) {
+          issues.push({ level: "error", message: `${label} ${question.id}: maximum marks must be greater than 0.` });
+        }
+      }
     }
   }
 
@@ -618,32 +1030,46 @@ export function validateMarksheet(
       }
     }
 
-    if (finalBlueprint?.enabled && !row.isAbsentFinal) {
-      const required = Math.max(1, Number(finalBlueprint.questionsToAnswer) || 1);
-      const perMark = Number(finalBlueprint.marksPerQuestion) || 0;
-      const entered = enteredMarks(row.finalExamQuestionsMarks ?? {});
+    if (finalBp.enabled) {
+      const absence = normaliseFinalAbsence(row);
+      const rawFinalMarks = asRecord(row.finalExamQuestionsMarks);
+      const hasSectionedMarks = rawFinalMarks.theory !== undefined
+        || rawFinalMarks.practical !== undefined
+        || rawFinalMarks.mcq !== undefined
+        || rawFinalMarks.essay !== undefined;
+      const normalisedMarks = normaliseFinalMarks(rawFinalMarks, finalBp);
 
-      if (entered.length < required) {
-        issues.push({
-          level: "error",
-          studentIndex: index,
-          message: `${index}: final paper — ${entered.length} of ${required} required answers recorded.`,
-        });
-      } else if (entered.length > required) {
-        issues.push({
-          level: "warning",
-          studentIndex: index,
-          message: `${index}: final paper — ${entered.length} answers recorded but only ${required} are counted.`,
-        });
-      }
+      for (const section of getFinalPaperSections(finalBp)) {
+        const absent = section.parent === "theory" ? absence.isAbsentTheory : absence.isAbsentPractical;
+        if (absent) continue;
 
-      for (const mark of entered) {
-        if (mark.value < 0 || (perMark > 0 && mark.value > perMark)) {
+        const requiredQuestions = section.blueprint.questions
+          .slice(0, finalSectionRequiredCount(section.blueprint));
+        const marksForCoverage = getFinalSectionMarks(normalisedMarks, section.key);
+        const enteredRequired = requiredQuestions.filter(question =>
+          toFiniteNumber(marksForCoverage[question.id]) !== null
+        ).length;
+        if (enteredRequired < requiredQuestions.length) {
           issues.push({
             level: "error",
             studentIndex: index,
-            message: `${index}: final ${mark.key} is ${mark.value} — must be between 0 and ${perMark}.`,
+            message: `${index}: ${section.label} — ${enteredRequired} of ${requiredQuestions.length} required marks recorded.`,
           });
+        }
+
+        const rawSectionMarks = hasSectionedMarks
+          ? getFinalSectionMarks(rawFinalMarks, section.key)
+          : section.key === "essay" ? rawFinalMarks : {};
+        for (const question of section.blueprint.questions) {
+          const value = toFiniteNumber(rawSectionMarks[question.id]);
+          const max = Number(question.maxMarks) || 0;
+          if (value !== null && (value < 0 || (max > 0 && value > max))) {
+            issues.push({
+              level: "error",
+              studentIndex: index,
+              message: `${index}: ${section.label} ${question.id} is ${value} — must be between 0 and ${max}.`,
+            });
+          }
         }
       }
     }
@@ -690,13 +1116,63 @@ export function validateBlueprintInput(
   if (!isFiniteNumber(bp.weightage) || Number(bp.weightage) < 0 || Number(bp.weightage) > 100) {
     return "Final paper weightage must be between 0 and 100.";
   }
-  if (!isPositiveInt(bp.totalQuestions)) return "Final paper total questions must be a positive whole number.";
-  if (!isPositiveInt(bp.marksPerQuestion)) return "Final paper marks per question must be a positive whole number.";
-  if (!isPositiveInt(bp.questionsToAnswer)) return "Final paper questions to answer must be a positive whole number.";
-  if (Number(bp.questionsToAnswer) > Number(bp.totalQuestions)) {
-    return "Final paper questions to answer cannot exceed the total questions.";
+
+  const theory = asRecord(bp.theory);
+  const structured = bp.theory !== undefined || bp.practical !== undefined || bp.sections !== undefined
+    || bp.mcq !== undefined || bp.essay !== undefined;
+  if (structured) {
+    const sectionInputs: { key: FinalSectionKey; label: string; value: unknown }[] = [
+      { key: "mcq", label: "Theory · MCQ", value: theory.mcq ?? bp.mcq },
+      { key: "essay", label: "Theory · Essay", value: theory.essay ?? bp.essay },
+      { key: "practical", label: "Practical", value: bp.practical ?? asRecord(bp.sections).practical },
+    ];
+    let configuredQuestionCount = 0;
+    for (const sectionInput of sectionInputs) {
+      const section = asRecord(sectionInput.value);
+      const questions = Array.isArray(sectionInput.value)
+        ? sectionInput.value
+        : Array.isArray(section.questions) ? section.questions : null;
+      if (questions === null) return `${sectionInput.label}: questions must be a list.`;
+      if (questions.length > 50) return `${sectionInput.label}: no more than 50 questions can be configured.`;
+      configuredQuestionCount += questions.length;
+
+      const requiredValue = section.questionsToAnswer ?? section.requiredQuestions ?? section.requiredQuestionCount;
+      if (questions.length === 0) {
+        if (requiredValue !== undefined && Number(requiredValue) !== 0) {
+          return `${sectionInput.label}: required question count must be 0 when no questions are configured.`;
+        }
+      } else if (!isPositiveInt(requiredValue) || Number(requiredValue) > questions.length) {
+        return `${sectionInput.label}: required question count must be between 1 and ${questions.length}.`;
+      }
+
+      const ids = new Set<string>();
+      for (let index = 0; index < questions.length; index++) {
+        const question = questions[index] as Record<string, unknown>;
+        if (!question || typeof question !== "object") {
+          return `${sectionInput.label}: question ${index + 1} is invalid.`;
+        }
+        const id = typeof question.id === "string" ? question.id.trim() : "";
+        if (!id) return `${sectionInput.label}: question ${index + 1} needs an ID.`;
+        if (ids.has(id)) return `${sectionInput.label}: question IDs must be unique.`;
+        ids.add(id);
+        if (!isFiniteNumber(question.maxMarks) || Number(question.maxMarks) <= 0 || Number(question.maxMarks) > 1000) {
+          return `${sectionInput.label} ${id}: maximum marks must be greater than 0 and no more than 1000.`;
+        }
+      }
+    }
+    if (bp.enabled && configuredQuestionCount === 0) {
+      return "Add at least one question to MCQ, Essay, or Practical before enabling the final paper.";
+    }
+  } else {
+    // Accept the previous flat blueprint while old clients are still in use.
+    if (!isPositiveInt(bp.totalQuestions)) return "Final paper total questions must be a positive whole number.";
+    if (!isPositiveInt(bp.marksPerQuestion)) return "Final paper marks per question must be a positive whole number.";
+    if (!isPositiveInt(bp.questionsToAnswer)) return "Final paper questions to answer must be a positive whole number.";
+    if (Number(bp.questionsToAnswer) > Number(bp.totalQuestions)) {
+      return "Final paper questions to answer cannot exceed the total questions.";
+    }
+    if (bp.scoreMode !== "SUM" && bp.scoreMode !== "AVG") return "Final paper score mode must be SUM or AVG.";
   }
-  if (bp.scoreMode !== "SUM" && bp.scoreMode !== "AVG") return "Final paper score mode must be SUM or AVG.";
 
   for (let i = 0; i < caComponents.length; i++) {
     const comp = caComponents[i] as Record<string, unknown>;
@@ -756,8 +1232,10 @@ export function validateBlueprintInput(
 export interface SanitisedRow {
   studentIndex: string;
   caQuestionsMarks: Record<string, Record<string, number>>;
-  finalExamQuestionsMarks: Record<string, number>;
+  finalExamQuestionsMarks: FinalPaperMarks;
   isAbsentCa: Record<string, boolean>;
+  isAbsentTheory: boolean;
+  isAbsentPractical: boolean;
   isAbsentFinal: boolean;
   /** Cohort eligibility — anything but an explicit `false` stays eligible. */
   isEligible: boolean;
@@ -777,7 +1255,9 @@ export function sanitiseMarkRow(
 
   const rawCa = (raw.caQuestionsMarks ?? {}) as Record<string, Record<string, unknown>>;
   const rawAbsentCa = (raw.isAbsentCa ?? {}) as Record<string, unknown>;
-  const rawFinal = (raw.finalExamQuestionsMarks ?? {}) as Record<string, unknown>;
+  const rawFinal = raw.finalExamQuestionsMarks ?? {};
+  const finalBp = normaliseFinalBlueprint(finalBlueprint);
+  const absence = normaliseFinalAbsence(raw);
 
   const caQuestionsMarks: Record<string, Record<string, number>> = {};
   const isAbsentCa: Record<string, boolean> = {};
@@ -791,17 +1271,21 @@ export function sanitiseMarkRow(
     caQuestionsMarks[comp.id] = sanitiseQuestionMap(rawCa[comp.id], maxima);
   }
 
-  const isAbsentFinal = raw.isAbsentFinal === true;
-  const finalCount = Math.max(0, Number(finalBlueprint?.totalQuestions) || 0);
-  const finalMaxima: Record<string, number> = {};
-  for (const key of questionKeys(finalCount)) {
-    finalMaxima[key] = Number(finalBlueprint?.marksPerQuestion) || 0;
-  }
-
-  const finalExamQuestionsMarks = isAbsentFinal ? {} : sanitiseQuestionMap(rawFinal, finalMaxima);
+  // Absence changes the scoring treatment but never destroys entered marks.
+  const finalExamQuestionsMarks = normaliseFinalMarks(rawFinal, finalBp);
+  const isAbsentFinal = absence.isAbsentTheory && absence.isAbsentPractical;
   const isEligible = raw.isEligible !== false;
 
-  return { studentIndex, caQuestionsMarks, finalExamQuestionsMarks, isAbsentCa, isAbsentFinal, isEligible };
+  return {
+    studentIndex,
+    caQuestionsMarks,
+    finalExamQuestionsMarks,
+    isAbsentCa,
+    isAbsentTheory: absence.isAbsentTheory,
+    isAbsentPractical: absence.isAbsentPractical,
+    isAbsentFinal,
+    isEligible,
+  };
 }
 
 /** Keeps only the expected keys, drops blanks, clamps each to its own maximum. */
@@ -843,7 +1327,8 @@ export function buildMarksheetCsv(
   finalBlueprint?: FinalBlueprint | null
 ): string {
   const comps = caComponents ?? [];
-  const finalQs = finalBlueprint?.enabled ? questionKeys(finalBlueprint.totalQuestions) : [];
+  const finalBp = normaliseFinalBlueprint(finalBlueprint);
+  const finalSections = finalBp.enabled ? getFinalPaperSections(finalBp) : [];
 
   const header: string[] = ["Student Index"];
   for (const comp of comps) {
@@ -853,9 +1338,14 @@ export function buildMarksheetCsv(
     }
     header.push(`${label} Total`, `${label} Max`, `${label} Absent`);
   }
-  for (const q of finalQs) header.push(`Final ${q}`);
-  if (finalBlueprint?.enabled) {
-    header.push("Final Total", "Final Max", "Final Absent");
+  for (const section of finalSections) {
+    for (const question of section.blueprint.questions) {
+      header.push(`Final ${section.label} ${question.id}`);
+    }
+    header.push(`${section.label} Total`, `${section.label} Max`);
+  }
+  if (finalBp.enabled) {
+    header.push("Theory Absent", "Practical Absent", "Final Raw Total", "Final Raw Max");
   }
   header.push("CA Weighted", "Final Weighted", "Module Mark (100)");
 
@@ -881,17 +1371,30 @@ export function buildMarksheetCsv(
       cells.push(absent ? "YES" : "");
     }
 
-    const finalMarks = (row.finalExamQuestionsMarks ?? {}) as Record<string, unknown>;
-    for (const q of finalQs) {
-      cells.push(row.isAbsentFinal ? "AB" : (toFiniteNumber(finalMarks[q]) ?? ""));
+    const finalMarks = normaliseFinalMarks(row.finalExamQuestionsMarks, finalBp);
+    const absence = normaliseFinalAbsence(row);
+    for (const section of finalSections) {
+      const absent = section.parent === "theory" ? absence.isAbsentTheory : absence.isAbsentPractical;
+      const sectionMarks = getFinalSectionMarks(finalMarks, section.key);
+      for (const question of section.blueprint.questions) {
+        cells.push(absent ? "AB" : (toFiniteNumber(sectionMarks[question.id]) ?? ""));
+      }
+      cells.push(
+        absent ? "AB" : round1(computeFinalSectionTotal(sectionMarks, section.blueprint)),
+        round1(finalSectionMaxScore(section.blueprint))
+      );
     }
-    if (finalBlueprint?.enabled) {
-      cells.push(row.isAbsentFinal ? "AB" : round1(computeRowTotal(finalMarks, finalBlueprint.questionsToAnswer, finalBlueprint.scoreMode)));
-      cells.push(round1(finalMaxScore(finalBlueprint)));
-      cells.push(row.isAbsentFinal ? "YES" : "");
+    if (finalBp.enabled) {
+      const finalTotals = computeFinalPaperTotals(row, finalBp, finalMarks);
+      cells.push(
+        absence.isAbsentTheory ? "YES" : "",
+        absence.isAbsentPractical ? "YES" : "",
+        finalTotals.rawTotal,
+        finalTotals.maxTotal
+      );
     }
 
-    const weighted = computeWeightedScores(row, comps, finalBlueprint);
+    const weighted = computeWeightedScores(row, comps, finalBp);
     cells.push(weighted.ca, weighted.final, weighted.total);
 
     lines.push(cells.map(csvCell).join(","));

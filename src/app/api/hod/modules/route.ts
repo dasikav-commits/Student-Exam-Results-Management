@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { asModuleStats, buildFinalExamTemplate, normaliseFinalBlueprint } from "@/lib/lecturer-marks";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,10 @@ export async function GET() {
       },
     });
 
-    const result = modules.map((m) => ({
+    const result = modules.map((m) => {
+      const stats = asModuleStats(m.stats);
+      const finalBlueprint = normaliseFinalBlueprint(stats.finalBlueprint, stats.examTemplate);
+      return {
       id: m.id,
       code: m.code,
       name: m.name,
@@ -25,14 +29,15 @@ export async function GET() {
       eligibleStudents: m.eligibleStudents,
       deadline: m.deadline,
       isFrozen: m.isFrozen,
-      stats: m.stats,
+      stats: { ...stats, finalBlueprint, examTemplate: buildFinalExamTemplate(finalBlueprint) },
       assignedActiveLec: m.activeLecturer
         ? { id: m.activeLecturer.id, fullName: m.activeLecturer.fullName ?? "" }
         : null,
       assignedExamLec: m.examLecturer
         ? { id: m.examLecturer.id, fullName: m.examLecturer.fullName ?? "" }
         : null,
-    }));
+      };
+    });
 
     return NextResponse.json(result);
   } catch (error) {
@@ -158,8 +163,11 @@ export async function PATCH(request: Request) {
     });
 
     return NextResponse.json({ success: true, ...updated });
-  } catch (error: any) {
-    if (error?.code === "P2025") {
+  } catch (error: unknown) {
+    const errorCode = typeof error === "object" && error !== null && "code" in error
+      ? error.code
+      : undefined;
+    if (errorCode === "P2025") {
       return NextResponse.json({ error: "Module not found" }, { status: 404 });
     }
     console.error("Error updating module:", error);

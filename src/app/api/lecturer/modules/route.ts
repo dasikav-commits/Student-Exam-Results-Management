@@ -3,9 +3,11 @@ import { prisma } from "@/lib/prisma";
 import {
   asModuleStats,
   blockingIssues,
+  buildFinalExamTemplate,
   isLecturerLocked,
   isMarksheetStatus,
   normaliseCaComponents,
+  normaliseFinalBlueprint,
   summariseIssues,
   toErrorMessage,
   validateBlueprintInput,
@@ -13,7 +15,6 @@ import {
   type MarkRowLike,
   type MarksheetStatusValue,
 } from "@/lib/lecturer-marks";
-import type { FinalBlueprint } from "@/types/hod";
 
 export const dynamic = "force-dynamic";
 
@@ -74,6 +75,8 @@ export async function GET(request: Request) {
       const isActiveLec = emailParam
         ? m.activeLecturer?.email === emailParam
         : m.activeLecturerId === parsedId;
+      const stats = asModuleStats(m.stats);
+      const finalBlueprint = normaliseFinalBlueprint(stats.finalBlueprint, stats.examTemplate);
 
       return {
         id: m.id,
@@ -81,7 +84,11 @@ export async function GET(request: Request) {
         name: m.name,
         credits: m.credits,
         isFrozen: m.isFrozen,
-        stats: m.stats,
+        stats: {
+          ...stats,
+          finalBlueprint,
+          examTemplate: buildFinalExamTemplate(finalBlueprint),
+        },
         activeLecturerId: m.activeLecturerId,
         examLecturerId: m.examLecturerId,
         assignedActiveLec: m.activeLecturer
@@ -189,7 +196,7 @@ export async function PATCH(request: Request) {
       // ── Submission gate: the marksheet must be complete ────────────────────
       if (target === "SECOND_CHECKING") {
         const caComponents = normaliseCaComponents(currentStats.caComponents);
-        const finalBlueprint = (currentStats.finalBlueprint ?? null) as FinalBlueprint | null;
+        const finalBlueprint = normaliseFinalBlueprint(currentStats.finalBlueprint, currentStats.examTemplate);
 
         if (caComponents.length === 0 && !finalBlueprint?.enabled) {
           return NextResponse.json(
@@ -205,6 +212,8 @@ export async function PATCH(request: Request) {
             caQuestionsMarks: true,
             finalExamQuestionsMarks: true,
             isAbsentCa: true,
+            isAbsentTheory: true,
+            isAbsentPractical: true,
             isAbsentFinal: true,
             isEligible: true,
           },
@@ -277,19 +286,11 @@ export async function PATCH(request: Request) {
       );
     }
 
-    // Canonical shape: Group A components carry totalMarks, Group B components
-    // carry a per-question weightage list. Legacy payloads are upgraded here.
+    // Canonicalise both the established CA groups and the section-based final
+    // blueprint. Legacy flat final papers are migrated into Theory → Essay.
     const caComponents = normaliseCaComponents(body.caComponents);
-    const finalBlueprint = body.finalBlueprint as FinalBlueprint;
-
-    // ── Auto-generate examTemplate from finalBlueprint ──────────────────────
-    const examTemplate =
-      finalBlueprint.enabled && (finalBlueprint.totalQuestions ?? 0) > 0
-        ? Array.from({ length: finalBlueprint.totalQuestions }, (_, i) => ({
-            id: `Q${i + 1}`,
-            maxMarks: finalBlueprint.marksPerQuestion,
-          }))
-        : [];
+    const finalBlueprint = normaliseFinalBlueprint(body.finalBlueprint);
+    const examTemplate = buildFinalExamTemplate(finalBlueprint);
 
     const componentIds = new Set(caComponents.map(comp => comp.id));
 

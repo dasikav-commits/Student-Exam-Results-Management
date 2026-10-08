@@ -8,6 +8,7 @@ import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import { ConfirmDialog, type ConfirmTone } from "@/components/lecturer/ConfirmDialog";
 import { MarksheetSummary, type MarksheetSummaryRow } from "@/components/lecturer/MarksheetSummary";
 import { ComponentMarksDialog } from "@/components/lecturer/ComponentMarksDialog";
+import { FinalSectionMarksDialog } from "@/components/lecturer/FinalSectionMarksDialog";
 import { openCaGridPrintWindow } from "@/lib/ca-print";
 import {
   BookOpen, Plus, Trash2, Save, Loader2, AlertCircle, CheckCircle2,
@@ -18,7 +19,17 @@ import {
   TriangleAlert, Info, Table2, X, Send, ArrowDownToLine,
   Pencil, Check, Printer, Eye, GraduationCap, Building2,
 } from "lucide-react";
-import type { CaComponent, CaGroup, DepartmentModule, FinalBlueprint, ModuleStats, StudentMarkRecord } from "@/types/hod";
+import type {
+  CaComponent,
+  CaGroup,
+  DepartmentModule,
+  FinalBlueprint,
+  FinalPaperMarks,
+  FinalSectionBlueprint,
+  FinalSectionKey,
+  ModuleStats,
+  StudentMarkRecord,
+} from "@/types/hod";
 import {
   CA_GROUP_A_TYPES,
   CA_GROUP_B_TYPES,
@@ -35,15 +46,28 @@ import {
   componentQuestionMax,
   componentRawTotal,
   componentRequiredAnswers,
+  computeFinalPaperTotals,
+  computeFinalSectionTotal,
   computeRowProgress,
   computeRowTotal,
   computeWeightedScores,
   downloadCsv,
   enteredMarks,
+  finalSectionMaxScore,
+  finalSectionRequiredCount,
+  finalSectionWeightage,
+  getFinalPaperSections,
+  getFinalSectionBlueprint,
+  getFinalSectionMarks,
+  hasAnyMark,
+  isFinalParentAbsent,
   isLecturerLocked,
   isRowEligible,
   normaliseCaComponent,
   normaliseCaComponents,
+  normaliseFinalAbsence,
+  normaliseFinalBlueprint,
+  normaliseFinalMarks,
   questionKeys,
   statusBadgeClass,
   statusLabel,
@@ -65,14 +89,30 @@ interface ConfirmState {
   action: () => void | Promise<void>;
 }
 
+const EMPTY_FINAL_SECTION = { questions: [], questionsToAnswer: 0 };
 const EMPTY_BLUEPRINT: FinalBlueprint = {
-  enabled: false, weightage: 0, totalQuestions: 5,
-  marksPerQuestion: 20, questionsToAnswer: 5, scoreMode: "SUM",
+  enabled: false,
+  weightage: 0,
+  theory: {
+    mcq: EMPTY_FINAL_SECTION,
+    essay: EMPTY_FINAL_SECTION,
+  },
+  practical: EMPTY_FINAL_SECTION,
 };
+
+function emptyFinalMarks(): FinalPaperMarks {
+  return { theory: { mcq: {}, essay: {} }, practical: {} };
+}
 
 const SCORE_MODES: { value: "SUM" | "AVG"; label: string }[] = [
   { value: "SUM", label: "Direct Sum (Σ)" },
   { value: "AVG", label: "Average (μ)" },
+];
+
+const FINAL_SECTION_SETUP: { key: FinalSectionKey; label: string; parent: "theory" | "practical"; tone: string }[] = [
+  { key: "mcq", label: "MCQ", parent: "theory", tone: "sky" },
+  { key: "essay", label: "Essay", parent: "theory", tone: "violet" },
+  { key: "practical", label: "Practical", parent: "practical", tone: "amber" },
 ];
 
 /**
@@ -101,22 +141,6 @@ function clampMark(value: number, max: number): number {
 
 function groupOfComponent(comp: CaComponent): CaGroup {
   return comp.group ?? caGroupOf(comp.type);
-}
-
-/** Excel / Sheets paste → grid of numbers (blank cells become null). */
-function parseClipboardGrid(text: string): (number | null)[][] {
-  return text
-    .replace(/\r/g, "")
-    .split("\n")
-    .filter(line => line.trim().length > 0)
-    .map(line =>
-      line.split("\t").map(cell => {
-        const trimmed = cell.trim();
-        if (!trimmed) return null;
-        const value = Number(trimmed);
-        return Number.isFinite(value) ? value : null;
-      })
-    );
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -161,8 +185,10 @@ export default function LecturerConsolePage() {
   const [isIssuesOpen, setIsIssuesOpen] = useState(false);
   /** Rows unlocked by the Action-column edit button; their component dialogs open in edit mode. */
   const [editingRows, setEditingRows] = useState<Set<string>>(new Set());
-  /** Student/component pair whose view dialog is open from a register cell. */
+  /** Student/component pair whose view dialog is open from a CA register cell. */
   const [popupTarget, setPopupTarget] = useState<{ compId: string; studentIndex: string } | null>(null);
+  /** Student/section pair whose final-paper question dialog is open. */
+  const [finalPopupTarget, setFinalPopupTarget] = useState<{ section: FinalSectionKey; studentIndex: string } | null>(null);
   const [isSendMenuOpen, setIsSendMenuOpen] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [isConfirmBusy, setIsConfirmBusy] = useState(false);
@@ -197,12 +223,13 @@ export default function LecturerConsolePage() {
     setIsIssuesOpen(false);
     setEditingRows(new Set());
     setPopupTarget(null);
+    setFinalPopupTarget(null);
     setMainTab("blueprint");
 
     const stats = statsOf(mod);
-    // Blueprints saved before the Group A / Group B split are upgraded here.
+    // Legacy flat blueprints are mapped into Theory → Essay on module load.
     const nextCa: CaComponent[] = normaliseCaComponents(stats.caComponents);
-    const nextBp: FinalBlueprint = stats.finalBlueprint ?? EMPTY_BLUEPRINT;
+    const nextBp: FinalBlueprint = normaliseFinalBlueprint(stats.finalBlueprint ?? EMPTY_BLUEPRINT, stats.examTemplate);
     setCaComponents(nextCa);
     setFinalBlueprint(nextBp);
     setSavedBlueprint({ ca: nextCa, bp: nextBp });
@@ -327,11 +354,12 @@ export default function LecturerConsolePage() {
         .map(({ row }) => {
         const weighted = computeWeightedScores(row, caComponents, finalBlueprint);
         const progress = computeRowProgress(row, caComponents, finalBlueprint);
-        const lecTotal = computeRowTotal(row.finalExamQuestionsMarks, finalBlueprint.questionsToAnswer, finalBlueprint.scoreMode);
-        const examTotalRaw = computeRowTotal(row.secondExamMarks, finalBlueprint.questionsToAnswer, finalBlueprint.scoreMode);
-        const hasExamMarks = enteredMarks(row.secondExamMarks).length > 0;
-        const variance = showComparison && !row.isAbsentFinal && hasExamMarks
-          ? Math.abs(lecTotal - examTotalRaw)
+        const absence = normaliseFinalAbsence(row);
+        const lecturerTotals = computeFinalPaperTotals(row, finalBlueprint);
+        const examinerTotals = computeFinalPaperTotals(row, finalBlueprint, row.secondExamMarks);
+        const hasExamMarks = hasAnyMark(row.secondExamMarks);
+        const variance = showComparison && !absence.isAbsentFinal && hasExamMarks
+          ? Math.abs(lecturerTotals.weighted - examinerTotals.weighted)
           : null;
         return {
           studentIndex: row.studentIndex,
@@ -341,8 +369,10 @@ export default function LecturerConsolePage() {
           caMax: weighted.caMax,
           finalMax: weighted.finalMax,
           progress: progress.percent,
-          isAbsentFinal: row.isAbsentFinal,
-          examTotal: hasExamMarks ? examTotalRaw : null,
+          isAbsentTheory: absence.isAbsentTheory,
+          isAbsentPractical: absence.isAbsentPractical,
+          isAbsentFinal: absence.isAbsentFinal,
+          examTotal: hasExamMarks ? examinerTotals.rawTotal : null,
           variance,
           varianceFlagged: variance !== null && variance > VARIANCE_THRESHOLD,
           issueCount: issues.filter(issue => issue.studentIndex === row.studentIndex).length,
@@ -372,6 +402,9 @@ export default function LecturerConsolePage() {
     : null;
   const popupStudent = popupTarget
     ? students.find(row => row.studentIndex === popupTarget.studentIndex) ?? null
+    : null;
+  const finalPopupStudent = finalPopupTarget
+    ? students.find(row => row.studentIndex === finalPopupTarget.studentIndex) ?? null
     : null;
 
   // ── CA Component handlers ──────────────────────────────────────────────────
@@ -500,6 +533,51 @@ export default function LecturerConsolePage() {
     }));
   };
 
+  // ── Final-paper section blueprint handlers ─────────────────────────────────
+  const patchFinalSection = (
+    sectionKey: FinalSectionKey,
+    update: (section: FinalSectionBlueprint) => FinalSectionBlueprint
+  ) => setFinalBlueprint(previous => sectionKey === "practical"
+    ? { ...previous, practical: update(previous.practical) }
+    : { ...previous, theory: { ...previous.theory, [sectionKey]: update(previous.theory[sectionKey]) } }
+  );
+
+  const updateFinalQuestionCount = (sectionKey: FinalSectionKey, raw: string) => {
+    const count = Math.max(0, Math.min(50, Math.floor(Number(raw) || 0)));
+    patchFinalSection(sectionKey, section => {
+      const seed = section.questions[section.questions.length - 1]?.maxMarks ?? 10;
+      const questions = Array.from({ length: count }, (_, index) =>
+        section.questions[index] ?? { id: `Q${index + 1}`, maxMarks: seed }
+      );
+      const questionsToAnswer = count === 0
+        ? 0
+        : Math.max(1, Math.min(count, section.questionsToAnswer || count));
+      return { ...section, questions, questionsToAnswer };
+    });
+  };
+
+  const updateFinalQuestionMax = (sectionKey: FinalSectionKey, questionIndex: number, raw: string) => {
+    patchFinalSection(sectionKey, section => ({
+      ...section,
+      questions: section.questions.map((question, index) => index === questionIndex
+        ? { ...question, maxMarks: Math.max(0, Number(raw) || 0) }
+        : question
+      ),
+    }));
+  };
+
+  const updateFinalRequiredCount = (sectionKey: FinalSectionKey, raw: string) => {
+    patchFinalSection(sectionKey, section => {
+      const count = section.questions.length;
+      return {
+        ...section,
+        questionsToAnswer: count === 0
+          ? 0
+          : Math.max(1, Math.min(count, Math.floor(Number(raw) || 1))),
+      };
+    });
+  };
+
   // ── Blueprint Save ─────────────────────────────────────────────────────────
   const handleSaveBlueprint = async (): Promise<boolean> => {
     if (!activeModule) return false;
@@ -520,7 +598,7 @@ export default function LecturerConsolePage() {
         const nextCa: CaComponent[] = result.stats?.caComponents
           ? normaliseCaComponents(result.stats.caComponents)
           : caComponents;
-        const nextBp: FinalBlueprint = result.stats?.finalBlueprint ?? finalBlueprint;
+        const nextBp: FinalBlueprint = normaliseFinalBlueprint(result.stats?.finalBlueprint ?? finalBlueprint, result.stats?.examTemplate);
         setCaComponents(nextCa);
         setFinalBlueprint(nextBp);
         setSavedBlueprint({ ca: nextCa, bp: nextBp });
@@ -575,9 +653,9 @@ export default function LecturerConsolePage() {
     mutateStudents(prev => [...prev, {
       id: 0, moduleCode: activeModule?.code ?? "",
       studentIndex: idx,
-      caQuestionsMarks: {}, finalExamQuestionsMarks: {},
-      secondExamMarks: {},
-      isAbsentCa: {}, isAbsentFinal: false,
+      caQuestionsMarks: {}, finalExamQuestionsMarks: emptyFinalMarks(),
+      secondExamMarks: emptyFinalMarks(),
+      isAbsentCa: {}, isAbsentTheory: false, isAbsentPractical: false, isAbsentFinal: false,
       // The HOD authorised the cohort when the module was created, so a newly
       // added student starts eligible; the lecturer unticks exceptions.
       isEligible: true,
@@ -609,9 +687,9 @@ export default function LecturerConsolePage() {
       added.push({
         id: 0, moduleCode: activeModule?.code ?? "",
         studentIndex: token,
-        caQuestionsMarks: {}, finalExamQuestionsMarks: {},
-        secondExamMarks: {},
-        isAbsentCa: {}, isAbsentFinal: false,
+        caQuestionsMarks: {}, finalExamQuestionsMarks: emptyFinalMarks(),
+        secondExamMarks: emptyFinalMarks(),
+        isAbsentCa: {}, isAbsentTheory: false, isAbsentPractical: false, isAbsentFinal: false,
         isEligible: true,
       });
     }
@@ -633,8 +711,8 @@ export default function LecturerConsolePage() {
 
   const requestRemoveStudent = (row: StudentMarkRecord) => {
     const isPersisted = persistedIndexes.includes(row.studentIndex);
-    const hasExamMarks = enteredMarks(row.secondExamMarks).length > 0;
-    const hasAnyMarks = enteredMarks(row.finalExamQuestionsMarks).length > 0
+    const hasExamMarks = hasAnyMark(row.secondExamMarks);
+    const hasAnyMarks = hasAnyMark(row.finalExamQuestionsMarks)
       || caComponents.some(comp => enteredMarks(row.caQuestionsMarks?.[comp.id] ?? {}).length > 0);
 
     const doRemove = () => {
@@ -693,12 +771,42 @@ export default function LecturerConsolePage() {
     }));
   };
 
-  const updateFinalMark = (studentIdx: string, q: string, val: number) =>
-    mutateStudents(prev => prev.map(row => {
+  const saveFinalSectionMarks = (
+    studentIdx: string,
+    sectionKey: FinalSectionKey,
+    marks: Record<string, number | null>
+  ) => {
+    const section = getFinalSectionBlueprint(finalBlueprint, sectionKey);
+    const parent = sectionKey === "practical" ? "practical" : "theory";
+    mutateStudents(previous => previous.map(row => {
+      if (row.studentIndex !== studentIdx || isFinalParentAbsent(row, parent)) return row;
+      const currentMarks = normaliseFinalMarks(row.finalExamQuestionsMarks, finalBlueprint);
+      const sectionMarks = { ...getFinalSectionMarks(currentMarks, sectionKey) } as Record<string, number>;
+      for (const question of section.questions) {
+        const value = marks[question.id];
+        if (value === null || value === undefined) delete sectionMarks[question.id];
+        else sectionMarks[question.id] = clampMark(value, question.maxMarks);
+      }
+      const finalMarks: FinalPaperMarks = sectionKey === "practical"
+        ? { ...currentMarks, practical: sectionMarks }
+        : { ...currentMarks, theory: { ...currentMarks.theory, [sectionKey]: sectionMarks } };
+      return { ...row, finalExamQuestionsMarks: finalMarks };
+    }));
+  };
+
+  /** Parent-level absence leaves all previously entered question marks intact. */
+  const toggleFinalParentAbsence = (studentIdx: string, parent: "theory" | "practical") =>
+    mutateStudents(previous => previous.map(row => {
       if (row.studentIndex !== studentIdx) return row;
-      const fm = { ...row.finalExamQuestionsMarks };
-      fm[q] = clampMark(val, finalBlueprint.marksPerQuestion);
-      return { ...row, finalExamQuestionsMarks: fm };
+      const absence = normaliseFinalAbsence(row);
+      const isAbsentTheory = parent === "theory" ? !absence.isAbsentTheory : absence.isAbsentTheory;
+      const isAbsentPractical = parent === "practical" ? !absence.isAbsentPractical : absence.isAbsentPractical;
+      return {
+        ...row,
+        isAbsentTheory,
+        isAbsentPractical,
+        isAbsentFinal: isAbsentTheory && isAbsentPractical,
+      };
     }));
 
   /** Toggle absence for one CA component without discarding its entered marks. */
@@ -712,13 +820,6 @@ export default function LecturerConsolePage() {
           [compId]: row.isAbsentCa?.[compId] !== true,
         },
       };
-    }));
-
-  const toggleAbsentFinal = (studentIdx: string) =>
-    mutateStudents(prev => prev.map(row => {
-      if (row.studentIndex !== studentIdx) return row;
-      const absent = !row.isAbsentFinal;
-      return { ...row, isAbsentFinal: absent, finalExamQuestionsMarks: absent ? {} : row.finalExamQuestionsMarks };
     }));
 
   // ── Cohort eligibility + per-row edit mode ────────────────────────────────
@@ -736,66 +837,6 @@ export default function LecturerConsolePage() {
       else next.add(studentIdx);
       return next;
     });
-
-  // ── Keyboard navigation + Excel-style paste ────────────────────────────────
-  const focusCell = (grid: string, column: string, fromRow: number, direction: 1 | -1) => {
-    const nodes = Array.from(
-      document.querySelectorAll<HTMLInputElement>(`input[data-grid="${grid}"][data-col="${column}"]`)
-    );
-    const next = nodes
-      .map(node => ({ node, row: Number(node.dataset.row ?? "-1") }))
-      .filter(entry => (direction === 1 ? entry.row > fromRow : entry.row < fromRow))
-      .sort((a, b) => (direction === 1 ? a.row - b.row : b.row - a.row))[0];
-
-    if (next) {
-      next.node.focus();
-      next.node.select();
-    }
-  };
-
-  const handleCellKeyDown = (
-    event: React.KeyboardEvent<HTMLInputElement>,
-    grid: string,
-    column: string,
-    rowIndex: number
-  ) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    focusCell(grid, column, rowIndex, event.shiftKey ? -1 : 1);
-  };
-
-  const handleFinalPaste = (
-    event: React.ClipboardEvent<HTMLInputElement>,
-    startRowIndex: number,
-    startKey: string
-  ) => {
-    const grid = parseClipboardGrid(event.clipboardData.getData("text/plain"));
-    if (grid.length === 0) return;
-    event.preventDefault();
-
-    const keys = questionKeys(finalBlueprint.totalQuestions);
-    const startColumn = Math.max(0, keys.indexOf(startKey));
-
-    mutateStudents(prev => {
-      const next = [...prev];
-      grid.forEach((cells, rowOffset) => {
-        const target = startRowIndex + rowOffset;
-        if (target < 0 || target >= next.length) return;
-        const row = next[target];
-        if (row.isAbsentFinal) return;
-        const marks = { ...row.finalExamQuestionsMarks };
-        cells.forEach((value, columnOffset) => {
-          const key = keys[startColumn + columnOffset];
-          if (!key || value === null) return;
-          marks[key] = clampMark(value, finalBlueprint.marksPerQuestion);
-        });
-        next[target] = { ...row, finalExamQuestionsMarks: marks };
-      });
-      return next;
-    });
-
-    setFeedback({ type: "info", text: `Pasted ${grid.length} row(s) into the final paper grid. Review the values, then save.` });
-  };
 
   // ── Save marks / submission flow ───────────────────────────────────────────
   const saveMarks = useCallback(async (): Promise<boolean> => {
@@ -1030,6 +1071,75 @@ export default function LecturerConsolePage() {
     setFeedback({ type: "info", text: `${eligible} eligible row(s) exported to CSV.` });
   };
 
+  const renderFinalSectionEditor = (setup: typeof FINAL_SECTION_SETUP[number]) => {
+    const section = getFinalSectionBlueprint(finalBlueprint, setup.key);
+    const tone = setup.tone === "sky"
+      ? "border-sky-200 bg-sky-50/50 text-sky-800"
+      : setup.tone === "violet"
+        ? "border-violet-200 bg-violet-50/50 text-violet-800"
+        : "border-amber-200 bg-amber-50/50 text-amber-800";
+    return (
+      <section key={setup.key} className={`rounded-xl border p-4 space-y-3 ${tone}`}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 className="text-sm font-black">{setup.label}</h4>
+            <p className="text-[10px] font-medium opacity-80">{setup.parent === "theory" ? "Theory parent section" : "Independent Practical parent section"}</p>
+          </div>
+          <span className="rounded-full bg-white/80 px-2.5 py-1 text-[10px] font-black">
+            Required max {finalSectionMaxScore(section)} · {finalSectionWeightage(finalBlueprint, setup.key).toFixed(1)}% of module mark
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-600">
+            Questions configured
+            <input
+              type="number"
+              min="0"
+              max="50"
+              value={section.questions.length}
+              onChange={event => updateFinalQuestionCount(setup.key, event.target.value)}
+              className="mt-1 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs font-bold text-neutral-800 focus:border-emerald-500 focus:outline-none"
+            />
+          </label>
+          <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-600">
+            Required answers
+            <input
+              type="number"
+              min={section.questions.length > 0 ? 1 : 0}
+              max={section.questions.length || 0}
+              disabled={section.questions.length === 0}
+              value={section.questionsToAnswer}
+              onChange={event => updateFinalRequiredCount(setup.key, event.target.value)}
+              className="mt-1 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs font-bold text-neutral-800 focus:border-emerald-500 focus:outline-none disabled:bg-neutral-100 disabled:text-neutral-400"
+            />
+          </label>
+        </div>
+        {section.questions.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+            {section.questions.map((question, index) => (
+              <label key={`${question.id}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-white/80 bg-white/80 px-3 py-2 text-xs font-bold text-neutral-700">
+                <span>{question.id}<span className="ml-1 text-[9px] font-medium text-neutral-400">{index < section.questionsToAnswer ? "required" : "optional"}</span></span>
+                <span className="flex items-center gap-1.5 text-[10px] text-neutral-500">Max
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={question.maxMarks || ""}
+                    aria-label={`${setup.label} ${question.id} maximum marks`}
+                    onChange={event => updateFinalQuestionMax(setup.key, index, event.target.value)}
+                    className="w-20 rounded-md border border-neutral-200 bg-white px-2 py-1 text-right text-xs font-black text-neutral-800 focus:border-emerald-500 focus:outline-none"
+                  />
+                </span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <p className="rounded-lg border border-dashed border-neutral-300 bg-white/60 px-3 py-4 text-center text-xs text-neutral-500">Set the question count to configure this section.</p>
+        )}
+      </section>
+    );
+  };
+
   /** Print-to-PDF export of the grouped CA register (browser print dialog). */
   const handleExportPdf = () => {
     if (!activeModule) return;
@@ -1099,7 +1209,9 @@ export default function LecturerConsolePage() {
     );
   }
 
-  const finalQs = finalBlueprint.enabled ? questionKeys(finalBlueprint.totalQuestions) : [];
+  const finalSections = finalBlueprint.enabled
+    ? getFinalPaperSections(finalBlueprint).filter(section => section.blueprint.questions.length > 0)
+    : [];
   const pendingReconciliationCount = modules.filter(
     m => statsOf(m).marksheetStatus === "RECONCILIATION_NEEDED" && !statsOf(m).lecturerApproved
   ).length;
@@ -1721,80 +1833,87 @@ export default function LecturerConsolePage() {
                       </div>
                     )}
 
-                    {/* ── Final Exam Tab ────────────────────────────────────── */}
+                    {/* ── Sectioned Final Paper Blueprint ──────────────────── */}
                     {bpTab === "final" && (
                       <div className="space-y-5">
-                        <div className="flex items-center justify-between">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
                           <div>
-                            <h3 className="font-bold text-sm">Final Examination Blueprint</h3>
-                            <p className="text-xs text-neutral-400 mt-0.5">Configure the written end-of-semester examination structure.</p>
+                            <h3 className="font-bold text-sm">Final Paper Blueprint</h3>
+                            <p className="text-xs text-neutral-500 mt-0.5">Theory contains MCQ and Essay. Practical is a separate parent section.</p>
                           </div>
                           <label className="flex items-center gap-2 cursor-pointer">
-                            <span className="text-xs font-bold text-neutral-600">Enabled</span>
+                            <span className="text-xs font-bold text-neutral-700">Final paper enabled</span>
                             <div
                               role="switch"
                               aria-checked={finalBlueprint.enabled}
                               tabIndex={0}
-                              onClick={() => setFinalBlueprint(f => ({ ...f, enabled: !f.enabled }))}
-                              onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFinalBlueprint(f => ({ ...f, enabled: !f.enabled })); } }}
-                              className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${finalBlueprint.enabled ? "bg-indigo-600" : "bg-neutral-300"}`}
+                              onClick={() => setFinalBlueprint(current => ({ ...current, enabled: !current.enabled }))}
+                              onKeyDown={event => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  setFinalBlueprint(current => ({ ...current, enabled: !current.enabled }));
+                                }
+                              }}
+                              className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${finalBlueprint.enabled ? "bg-emerald-600" : "bg-neutral-300"}`}
                             >
                               <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${finalBlueprint.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
                             </div>
                           </label>
                         </div>
 
-                        {finalBlueprint.enabled && (
-                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                            <div>
-                              <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Weightage (%)</label>
-                              <input type="number" min="0" max="100" value={finalBlueprint.weightage || ""} onChange={e => setFinalBlueprint(f => ({ ...f, weightage: Number(e.target.value) }))} className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs font-bold focus:outline-none focus:border-indigo-500 text-right" />
+                        {finalBlueprint.enabled ? (
+                          <>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                              <label className="text-[10px] font-bold text-neutral-600 uppercase tracking-wider">
+                                Overall Final Paper weightage (%)
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  value={finalBlueprint.weightage || ""}
+                                  onChange={event => setFinalBlueprint(current => ({ ...current, weightage: Number(event.target.value) }))}
+                                  className="mt-1 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs font-bold text-right focus:border-emerald-500 focus:outline-none"
+                                />
+                              </label>
+                              <div className="sm:col-span-2 rounded-lg border border-emerald-100 bg-emerald-50/60 px-3 py-2 text-[11px] leading-relaxed text-emerald-900">
+                                One weight applies to the complete Final Paper. Each section receives a proportional share based on its required maximum marks; no answers are automatically graded.
+                              </div>
                             </div>
-                            <div>
-                              <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Total Questions</label>
-                              <input type="number" min="1" max="30" value={finalBlueprint.totalQuestions} onChange={e => { const n = Number(e.target.value); setFinalBlueprint(f => ({ ...f, totalQuestions: n, questionsToAnswer: Math.min(f.questionsToAnswer, n) })); }} className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs font-bold focus:outline-none focus:border-indigo-500 text-right" />
+
+                            <div className="rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 space-y-3">
+                              <div>
+                                <h4 className="text-xs font-black uppercase tracking-wider text-neutral-700">Theory</h4>
+                                <p className="text-[10px] text-neutral-500 mt-0.5">Absence is recorded once for this parent and covers both MCQ and Essay.</p>
+                              </div>
+                              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                                {FINAL_SECTION_SETUP.filter(section => section.parent === "theory").map(renderFinalSectionEditor)}
+                              </div>
                             </div>
-                            <div>
-                              <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Marks / Question</label>
-                              <input type="number" min="1" value={finalBlueprint.marksPerQuestion} onChange={e => setFinalBlueprint(f => ({ ...f, marksPerQuestion: Number(e.target.value) }))} className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs font-bold focus:outline-none focus:border-indigo-500 text-right" />
+
+                            <div className="rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 space-y-3">
+                              <div>
+                                <h4 className="text-xs font-black uppercase tracking-wider text-neutral-700">Practical</h4>
+                                <p className="text-[10px] text-neutral-500 mt-0.5">Practical has its own question list and its own parent-level absence status.</p>
+                              </div>
+                              <div className="grid grid-cols-1 gap-3">
+                                {FINAL_SECTION_SETUP.filter(section => section.parent === "practical").map(renderFinalSectionEditor)}
+                              </div>
                             </div>
-                            <div>
-                              <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Questions to Answer</label>
-                              <input type="number" min="1" max={finalBlueprint.totalQuestions} value={finalBlueprint.questionsToAnswer} onChange={e => setFinalBlueprint(f => ({ ...f, questionsToAnswer: Math.min(f.totalQuestions, Number(e.target.value)) }))} className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs font-bold focus:outline-none focus:border-indigo-500 text-right" />
-                            </div>
-                            <div className="sm:col-span-2">
-                              <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">Score Mode</label>
-                              <div className="flex gap-2">
-                                {SCORE_MODES.map(m => (
-                                  <button key={m.value} onClick={() => setFinalBlueprint(f => ({ ...f, scoreMode: m.value }))} className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-all cursor-pointer ${finalBlueprint.scoreMode === m.value ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50"}`}>
-                                    {m.label}
-                                  </button>
+
+                            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-neutral-200 bg-white px-4 py-3 text-xs">
+                              <span className="font-bold text-neutral-700">Total required maximum: {getFinalPaperSections(finalBlueprint).reduce((sum, section) => sum + finalSectionMaxScore(section.blueprint), 0)} marks</span>
+                              <div className="flex flex-wrap gap-2 text-[10px] font-bold">
+                                {getFinalPaperSections(finalBlueprint).map(section => (
+                                  <span key={section.key} className="rounded-full bg-neutral-100 px-2 py-1 text-neutral-600">
+                                    {section.label}: {finalSectionWeightage(finalBlueprint, section.key).toFixed(1)}% share
+                                  </span>
                                 ))}
                               </div>
                             </div>
-                          </div>
-                        )}
-
-                        {/* Auto-generated template preview */}
-                        {finalBlueprint.enabled && finalBlueprint.totalQuestions > 0 && (
-                          <div className="bg-amber-50/40 border border-amber-200/60 rounded-xl p-4">
-                            <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wider mb-2">Auto-Generated Question Template</p>
-                            <div className="flex flex-wrap gap-2">
-                              {questionKeys(finalBlueprint.totalQuestions).map(q => (
-                                <span key={q} className="bg-white border border-amber-200 text-amber-800 font-bold text-xs px-2.5 py-1 rounded-lg">
-                                  {q} / {finalBlueprint.marksPerQuestion}
-                                </span>
-                              ))}
-                            </div>
-                            <p className="text-xs text-amber-600 font-semibold mt-2">
-                              Max Score: {finalBlueprint.totalQuestions * finalBlueprint.marksPerQuestion} · Answer: {finalBlueprint.questionsToAnswer} of {finalBlueprint.totalQuestions} · Mode: {finalBlueprint.scoreMode}
-                            </p>
-                          </div>
-                        )}
-
-                        {!finalBlueprint.enabled && (
-                          <div className="border-2 border-dashed border-neutral-200 rounded-xl p-8 text-center text-sm text-neutral-400">
-                            Enable the final exam toggle above to configure the blueprint.
+                          </>
+                        ) : (
+                          <div className="border-2 border-dashed border-neutral-200 rounded-xl p-8 text-center text-sm text-neutral-500">
+                            Enable the Final Paper to configure Theory (MCQ and Essay) and Practical question lists.
                           </div>
                         )}
                       </div>
@@ -2207,218 +2326,164 @@ export default function LecturerConsolePage() {
                       </div>
                     )}
 
-                    {/* ── Final Paper Grid ─────────────────────────────────── */}
+                    {/* ── Section summary grid; question marks open in section dialogs ── */}
                     {marksTab === "final_marks" && (
                       <div>
                         {!finalBlueprint.enabled ? (
-                          <p className="text-sm text-neutral-400 italic text-center py-8">Final exam blueprint is not enabled. Enable it in the Blueprint Setup tab.</p>
+                          <p className="py-8 text-center text-sm italic text-neutral-500">The Final Paper is not enabled. Configure it in the Blueprint Setup tab.</p>
                         ) : (
-                          <div>
-                            {/* Reconciliation / variance banner */}
+                          <div className="space-y-4">
                             {showComparison && (
-                              <div className={`flex flex-wrap items-center gap-4 mb-4 p-3 rounded-xl border ${isReconciliationNeeded ? "bg-orange-50 border-orange-200" : "bg-amber-50 border-amber-200"}`}>
+                              <div className={`flex flex-wrap items-center gap-4 p-3 rounded-xl border ${isReconciliationNeeded ? "bg-orange-50 border-orange-200" : "bg-amber-50 border-amber-200"}`}>
                                 <div className="flex items-center gap-2">
-                                  {isReconciliationNeeded
-                                    ? <GitMerge className="h-4 w-4 text-orange-600" />
-                                    : <ArrowLeftRight className="h-4 w-4 text-amber-600" />
-                                  }
+                                  {isReconciliationNeeded ? <GitMerge className="h-4 w-4 text-orange-600" /> : <ArrowLeftRight className="h-4 w-4 text-amber-600" />}
                                   <span className={`text-xs font-bold ${isReconciliationNeeded ? "text-orange-800" : "text-amber-800"}`}>
                                     {isReconciliationNeeded ? "Joint Reconciliation Review" : "Variance Analysis Mode"}
                                   </span>
-                                  {isReconciliationNeeded && (
-                                    <span className="text-[10px] text-orange-600">
-                                      — Variance &gt; {VARIANCE_THRESHOLD} detected. Review and approve the Examiner&apos;s marks.
-                                    </span>
-                                  )}
+                                  {isReconciliationNeeded && <span className="text-[10px] text-orange-700">Review the Examiner&apos;s section marks and approve when ready.</span>}
                                 </div>
                                 {isReconciliationNeeded && !lecturerApproved && (
                                   <button
                                     onClick={handleApproveReconciliation}
                                     disabled={isApprovingReconciliation}
-                                    className="ml-auto shrink-0 flex items-center gap-2 h-9 px-4 text-xs font-bold bg-orange-600 text-white rounded-xl hover:bg-orange-700 disabled:opacity-40 transition-all cursor-pointer"
+                                    className="ml-auto flex items-center gap-2 h-9 px-4 text-xs font-bold bg-orange-600 text-white rounded-xl hover:bg-orange-700 disabled:opacity-40 cursor-pointer"
                                   >
-                                    {isApprovingReconciliation
-                                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                      : <CheckCircle2 className="h-3.5 w-3.5" />
-                                    }
+                                    {isApprovingReconciliation ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
                                     Approve Examiner&apos;s Assessment
                                   </button>
                                 )}
-                                {isReconciliationNeeded && lecturerApproved && (
-                                  <div className="ml-auto flex items-center gap-1.5 text-[11px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-3 py-1.5 rounded-lg">
-                                    <CheckCircle2 className="h-3.5 w-3.5" />
-                                    Approved — Awaiting Examiner finalisation
-                                  </div>
-                                )}
+                                {isReconciliationNeeded && lecturerApproved && <span className="ml-auto text-[11px] font-bold text-teal-700">Approved — awaiting Examiner finalisation</span>}
                               </div>
                             )}
 
-                            <div className="flex items-center gap-3 mb-3 flex-wrap">
-                              <div className="h-1 w-1 rounded-full bg-emerald-500" />
-                              <h4 className="font-bold text-sm">Final Written Examination</h4>
-                              <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
-                                {finalBlueprint.weightage}% · {finalBlueprint.questionsToAnswer}/{finalBlueprint.totalQuestions} Qs · {finalBlueprint.scoreMode} · max {finalBlueprint.questionsToAnswer * finalBlueprint.marksPerQuestion}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h4 className="font-bold text-sm">Final Paper</h4>
+                              <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                                {finalBlueprint.weightage}% overall · required max {getFinalPaperSections(finalBlueprint).reduce((sum, section) => sum + finalSectionMaxScore(section.blueprint), 0)} marks
                               </span>
+                              {getFinalPaperSections(finalBlueprint).map(section => (
+                                <span key={section.key} className="text-[9px] font-bold text-neutral-600 bg-neutral-100 px-2 py-0.5 rounded-full">
+                                  {section.label} {finalSectionWeightage(finalBlueprint, section.key).toFixed(1)}%
+                                </span>
+                              ))}
                             </div>
 
-                            <div className="border border-neutral-200 rounded-xl overflow-auto">
-                              <table className="w-full text-xs text-left border-collapse">
-                                <thead>
-                                  <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200">
-                                    <th className="px-4 py-3 w-10">#</th>
-                                    <th className="px-4 py-3 w-32">Student ID</th>
-                                    {finalQs.map(q => (
-                                      <th key={`lec-${q}`} className="px-2 py-3 text-center bg-emerald-50/40 w-14">
-                                        {showComparison && <span className="block text-[8px] font-normal text-emerald-500 leading-none mb-0.5">Lec</span>}
-                                        {q}<span className="block text-[9px] text-neutral-400 font-normal">/{finalBlueprint.marksPerQuestion}</span>
-                                      </th>
-                                    ))}
-                                    <th className="px-4 py-3 text-center bg-emerald-100/60 text-emerald-700 w-16">
-                                      {showComparison && <span className="block text-[8px] font-normal text-emerald-500 leading-none mb-0.5">Lec</span>}
-                                      Total
-                                    </th>
-                                    <th className="px-4 py-3 text-center w-14">AB</th>
-                                    {!isReadOnly && <th className="px-3 py-3 w-10" />}
-                                    {showComparison && (
-                                      <>
-                                        <th className="px-2 py-3 w-8 bg-neutral-100">
-                                          <ArrowLeftRight className="h-3 w-3 mx-auto text-neutral-400" />
-                                        </th>
-                                        {finalQs.map(q => (
-                                          <th key={`exam-${q}`} className="px-2 py-3 text-center bg-amber-50/70 text-amber-800 w-14">
-                                            <span className="block text-[8px] font-normal text-amber-500 leading-none mb-0.5">2nd</span>
-                                            {q}<span className="block text-[9px] text-neutral-400 font-normal">/{finalBlueprint.marksPerQuestion}</span>
-                                          </th>
-                                        ))}
-                                        <th className="px-4 py-3 text-center bg-amber-100/60 text-amber-700 font-extrabold w-16">
-                                          <span className="block text-[8px] font-normal text-amber-500 leading-none mb-0.5">2nd</span>
-                                          Total
-                                        </th>
-                                        <th className="px-4 py-3 text-center w-16 bg-rose-50/50 text-rose-700">Δ Var</th>
-                                      </>
-                                    )}
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-neutral-100">
-                                  {visibleStudents.map(({ row, index }) => {
-                                    const isAbsent = row.isAbsentFinal;
-                                    const fm = row.finalExamQuestionsMarks ?? {};
-                                    const sm = row.secondExamMarks ?? {};
-                                    const lecTotal = computeRowTotal(fm, finalBlueprint.questionsToAnswer, finalBlueprint.scoreMode);
-                                    const examTotal = computeRowTotal(sm, finalBlueprint.questionsToAnswer, finalBlueprint.scoreMode);
-                                    const hasExamMarks = enteredMarks(sm).length > 0;
-                                    const answered = enteredMarks(fm).length;
-                                    const short = !isAbsent && answered < finalBlueprint.questionsToAnswer;
-                                    const variance = showComparison && !isAbsent && hasExamMarks
-                                      ? Math.abs(lecTotal - examTotal)
-                                      : null;
-                                    const flagged = variance !== null && variance > VARIANCE_THRESHOLD;
-
-                                    return (
-                                      <tr
-                                        key={row.studentIndex}
-                                        className={`transition-colors ${isAbsent ? "bg-neutral-100/60 text-neutral-400 line-through" : flagged ? "bg-rose-50/30" : short ? "bg-amber-50/40" : "hover:bg-neutral-50/40"}`}
-                                      >
-                                        <td className="px-4 py-3 font-bold text-neutral-400">
-                                          {index + 1}
-                                          {!isAbsent && problemIndexes.has(row.studentIndex) && (
-                                            <span title="This row still has marksheet issues" className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle" />
-                                          )}
-                                        </td>
-                                        <td className="px-4 py-3 font-bold tracking-wider uppercase">{row.studentIndex}</td>
-                                        {finalQs.map(q => (
-                                          <td key={`lec-${q}`} className="px-1.5 py-2 bg-emerald-50/10 text-center">
-                                            {isAbsent ? (
-                                              <span className="text-neutral-400 font-bold text-[11px]">AB</span>
-                                            ) : (
-                                              <input
-                                                type="number" min="0" max={finalBlueprint.marksPerQuestion}
-                                                value={fm[q] ?? ""}
-                                                placeholder="0"
-                                                disabled={isReadOnly || isAbsent}
-                                                data-grid="final"
-                                                data-col={q}
-                                                data-row={index}
-                                                aria-label={`${row.studentIndex} final ${q}`}
-                                                onChange={e => updateFinalMark(row.studentIndex, q, Number(e.target.value))}
-                                                onKeyDown={e => handleCellKeyDown(e, "final", q, index)}
-                                                onPaste={e => handleFinalPaste(e, index, q)}
-                                                className={`w-12 bg-white border rounded py-1 text-center font-bold focus:outline-none focus:border-emerald-400 disabled:opacity-40 ${short && !fm[q] ? "border-amber-300" : "border-neutral-200"}`}
-                                              />
-                                            )}
-                                          </td>
-                                        ))}
-                                        <td className="px-4 py-3 text-center font-extrabold text-emerald-700">
-                                          {isAbsent
-                                            ? "AB"
-                                            : answered === 0
-                                              ? <span className="text-neutral-300">—</span>
-                                              : lecTotal.toFixed(1)}
-                                        </td>
-                                        <td className="px-4 py-3 text-center">
-                                          <button
-                                            disabled={isReadOnly}
-                                            onClick={() => toggleAbsentFinal(row.studentIndex)}
-                                            title={isAbsent ? "Mark present" : "Mark absent"}
-                                            className={`px-2 py-1 text-[10px] font-extrabold rounded cursor-pointer disabled:opacity-40 ${isAbsent ? "bg-rose-600 text-white" : "bg-neutral-100 text-neutral-500 hover:bg-rose-50 hover:text-rose-600"}`}
-                                          >AB</button>
-                                        </td>
-                                        {!isReadOnly && (
-                                          <td className="px-3 py-3 text-center">
-                                            <button
-                                              onClick={() => requestRemoveStudent(row)}
-                                              aria-label={`Remove ${row.studentIndex}`}
-                                              className="text-neutral-400 hover:text-rose-600 cursor-pointer"
-                                            >
-                                              <Trash2 className="h-3.5 w-3.5" />
-                                            </button>
-                                          </td>
-                                        )}
-                                        {/* 2nd Examiner read-only cells */}
-                                        {showComparison && (
-                                          <>
-                                            <td className="px-1 py-3 bg-neutral-100/80" />
-                                            {finalQs.map(q => (
-                                              <td key={`exam-${q}`} className="px-2 py-3 bg-amber-50/20 text-center">
-                                                {isAbsent ? (
-                                                  <span className="text-neutral-400 font-bold text-[11px]">AB</span>
-                                                ) : (
-                                                  <span className="inline-block w-10 py-1 text-center text-xs font-bold text-amber-700 bg-amber-50 rounded border border-amber-100">
-                                                    {hasExamMarks ? (sm[q] ?? "—") : <span className="text-neutral-300 text-[10px]">—</span>}
-                                                  </span>
-                                                )}
-                                              </td>
-                                            ))}
-                                            <td className="px-4 py-3 text-center font-extrabold text-amber-700 bg-amber-50/20">
-                                              {isAbsent ? "AB" : (hasExamMarks ? examTotal.toFixed(1) : <span className="text-neutral-300 font-normal text-xs">—</span>)}
-                                            </td>
-                                            <td className="px-4 py-3 text-center bg-rose-50/20">
-                                              {isAbsent || variance === null ? (
-                                                <span className="text-neutral-300 text-xs">—</span>
-                                              ) : flagged ? (
-                                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-0.5 rounded-full">
-                                                  <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse inline-block" />
-                                                  {variance.toFixed(1)}
-                                                </span>
-                                              ) : (
-                                                <span className="text-[10px] font-bold text-emerald-600">{variance.toFixed(1)}</span>
-                                              )}
-                                            </td>
-                                          </>
-                                        )}
-                                      </tr>
-                                    );
-                                  })}
-                                  {visibleStudents.length === 0 && (
-                                    <tr>
-                                      <td colSpan={finalQs.length + (showComparison ? finalQs.length + 4 : 4) + (isReadOnly ? 0 : 1)} className="px-4 py-8 text-center text-neutral-400 italic">
-                                        {searchTerm ? `No student matches “${searchTerm}”.` : "No students added yet."}
-                                      </td>
+                            {finalSections.length === 0 ? (
+                              <div className="rounded-xl border border-dashed border-neutral-200 p-8 text-center text-sm text-neutral-500">No questions are configured in the enabled Final Paper blueprint.</div>
+                            ) : (
+                              <div className="border border-neutral-200 rounded-xl overflow-auto">
+                                <table className="w-full min-w-[980px] text-xs text-left border-collapse">
+                                  <thead>
+                                    <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-500 uppercase tracking-wider border-b border-neutral-200">
+                                      <th className="px-3 py-3 w-10">#</th>
+                                      <th className="px-3 py-3 w-32">Student ID</th>
+                                      <th className="px-3 py-3 text-center w-24">Theory AB</th>
+                                      <th className="px-3 py-3 text-center w-24">Practical AB</th>
+                                      {finalSections.map(section => (
+                                        <th key={section.key} className="px-3 py-3 text-center min-w-36">{section.label}<span className="block text-[9px] font-normal normal-case text-neutral-400">{finalSectionMaxScore(section.blueprint)} required max</span></th>
+                                      ))}
+                                      <th className="px-3 py-3 text-center bg-emerald-50/60 text-emerald-800">Lecturer raw total</th>
+                                      {showComparison && (
+                                        <>
+                                          <th className="px-3 py-3 text-center bg-amber-50/60 text-amber-800">2nd raw total</th>
+                                          <th className="px-3 py-3 text-center bg-rose-50/50 text-rose-700" title="Difference between weighted Final Paper contributions">Δ Weighted</th>
+                                        </>
+                                      )}
+                                      {!isReadOnly && <th className="px-3 py-3 w-10" />}
                                     </tr>
-                                  )}
-                                </tbody>
-                              </table>
-                            </div>
+                                  </thead>
+                                  <tbody className="divide-y divide-neutral-100">
+                                    {visibleStudents.map(({ row, index }) => {
+                                      const absence = normaliseFinalAbsence(row);
+                                      const marks = normaliseFinalMarks(row.finalExamQuestionsMarks, finalBlueprint);
+                                      const secondMarks = normaliseFinalMarks(row.secondExamMarks, finalBlueprint);
+                                      const finalTotals = computeFinalPaperTotals(row, finalBlueprint, marks);
+                                      const secondTotals = computeFinalPaperTotals(row, finalBlueprint, secondMarks);
+                                      const hasSecondMarks = hasAnyMark(row.secondExamMarks);
+                                      const variance = showComparison && !absence.isAbsentFinal && hasSecondMarks
+                                        ? Math.abs(finalTotals.weighted - secondTotals.weighted)
+                                        : null;
+                                      const flagged = variance !== null && variance > VARIANCE_THRESHOLD;
+
+                                      return (
+                                        <tr key={row.studentIndex} className={`transition-colors ${absence.isAbsentFinal ? "bg-neutral-100/50" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/40"}`}>
+                                          <td className="px-3 py-3 font-bold text-neutral-400">{index + 1}</td>
+                                          <td className="px-3 py-3 font-bold tracking-wider uppercase">{row.studentIndex}</td>
+                                          <td className="px-2 py-2 text-center">
+                                            <button
+                                              disabled={isReadOnly}
+                                              onClick={() => toggleFinalParentAbsence(row.studentIndex, "theory")}
+                                              title={absence.isAbsentTheory ? "Mark Theory present" : "Mark Theory absent"}
+                                              aria-pressed={absence.isAbsentTheory}
+                                              className={`px-2 py-1 text-[9px] font-black rounded cursor-pointer disabled:cursor-default disabled:opacity-70 ${absence.isAbsentTheory ? "bg-rose-600 text-white" : "bg-neutral-100 text-neutral-500 hover:bg-rose-50 hover:text-rose-600"}`}
+                                            >{absence.isAbsentTheory ? "ABSENT" : "Present"}</button>
+                                          </td>
+                                          <td className="px-2 py-2 text-center">
+                                            <button
+                                              disabled={isReadOnly}
+                                              onClick={() => toggleFinalParentAbsence(row.studentIndex, "practical")}
+                                              title={absence.isAbsentPractical ? "Mark Practical present" : "Mark Practical absent"}
+                                              aria-pressed={absence.isAbsentPractical}
+                                              className={`px-2 py-1 text-[9px] font-black rounded cursor-pointer disabled:cursor-default disabled:opacity-70 ${absence.isAbsentPractical ? "bg-rose-600 text-white" : "bg-neutral-100 text-neutral-500 hover:bg-rose-50 hover:text-rose-600"}`}
+                                            >{absence.isAbsentPractical ? "ABSENT" : "Present"}</button>
+                                          </td>
+                                          {finalSections.map(section => {
+                                            const absent = section.parent === "theory"
+                                              ? absence.isAbsentTheory
+                                              : absence.isAbsentPractical;
+                                            const sectionMarks = getFinalSectionMarks(marks, section.key);
+                                            const requiredQuestions = section.blueprint.questions.slice(0, finalSectionRequiredCount(section.blueprint));
+                                            const answered = requiredQuestions.filter(question => sectionMarks[question.id] !== undefined).length;
+                                            const total = computeFinalSectionTotal(sectionMarks, section.blueprint);
+                                            const max = finalSectionMaxScore(section.blueprint);
+                                            return (
+                                              <td key={section.key} className="px-2 py-2 text-center">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setFinalPopupTarget({ section: section.key, studentIndex: row.studentIndex })}
+                                                  title={`View/edit ${section.label} question marks for ${row.studentIndex}`}
+                                                  className={`w-full min-w-32 rounded-lg border px-2.5 py-2 text-center transition-colors cursor-pointer ${absent ? "border-rose-100 bg-rose-50/70 text-rose-700" : "border-neutral-200 bg-white text-neutral-800 hover:border-emerald-300 hover:bg-emerald-50/40"}`}
+                                                >
+                                                  <span className="block text-xs font-black tabular-nums">{absent ? "AB" : `${total.toFixed(1)} / ${max}`}</span>
+                                                  {!absent && <span className="block mt-0.5 text-[9px] font-semibold text-neutral-400">{answered}/{requiredQuestions.length} required</span>}
+                                                </button>
+                                              </td>
+                                            );
+                                          })}
+                                          <td className="px-3 py-3 text-center font-black text-emerald-800 bg-emerald-50/20 tabular-nums">
+                                            {absence.isAbsentFinal ? "AB" : `${finalTotals.rawTotal.toFixed(1)} / ${finalTotals.maxTotal}`}
+                                          </td>
+                                          {showComparison && (
+                                            <>
+                                              <td className="px-3 py-3 text-center font-bold text-amber-800 bg-amber-50/20 tabular-nums">
+                                                {absence.isAbsentFinal ? "AB" : hasSecondMarks ? secondTotals.rawTotal.toFixed(1) : <span className="text-neutral-300">—</span>}
+                                              </td>
+                                              <td className="px-3 py-3 text-center bg-rose-50/20">
+                                                {variance === null ? <span className="text-neutral-300">—</span> : flagged ? (
+                                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-0.5 rounded-full"><span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />{variance.toFixed(1)}</span>
+                                                ) : <span className="text-[10px] font-bold text-emerald-600">{variance.toFixed(1)}</span>}
+                                              </td>
+                                            </>
+                                          )}
+                                          {!isReadOnly && (
+                                            <td className="px-3 py-3 text-center">
+                                              <button onClick={() => requestRemoveStudent(row)} aria-label={`Remove ${row.studentIndex}`} className="text-neutral-400 hover:text-rose-600 cursor-pointer"><Trash2 className="h-3.5 w-3.5" /></button>
+                                            </td>
+                                          )}
+                                        </tr>
+                                      );
+                                    })}
+                                    {visibleStudents.length === 0 && (
+                                      <tr><td colSpan={2 + 2 + finalSections.length + 1 + (showComparison ? 2 : 0) + (isReadOnly ? 0 : 1)} className="px-4 py-8 text-center text-neutral-500 italic">{searchTerm ? `No student matches “${searchTerm}”.` : "No students added yet."}</td></tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+
+                            {!isReadOnly && finalSections.length > 0 && (
+                              <p className="text-[11px] text-neutral-500">Open an MCQ, Essay, or Practical cell to enter question-by-question lecturer marks. Theory absence covers MCQ and Essay together; Practical absence is independent. Marks remain stored while absent and count again if attendance is restored.</p>
+                            )}
                           </div>
                         )}
                       </div>
@@ -2558,6 +2623,21 @@ export default function LecturerConsolePage() {
             });
           }}
           onClose={() => setPopupTarget(null)}
+        />
+      )}
+
+      {finalPopupTarget && finalPopupStudent && (
+        <FinalSectionMarksDialog
+          key={`${finalPopupTarget.studentIndex}:${finalPopupTarget.section}`}
+          sectionKey={finalPopupTarget.section}
+          blueprint={finalBlueprint}
+          row={finalPopupStudent}
+          isAbsent={isFinalParentAbsent(finalPopupStudent, finalPopupTarget.section === "practical" ? "practical" : "theory")}
+          isReadOnly={isReadOnly}
+          secondMarks={finalPopupStudent.secondExamMarks}
+          showExaminerMarks={showComparison}
+          onSave={saveFinalSectionMarks}
+          onClose={() => setFinalPopupTarget(null)}
         />
       )}
 
