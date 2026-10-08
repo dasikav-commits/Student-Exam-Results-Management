@@ -30,8 +30,10 @@ export interface MarksheetSummaryProps {
   rows: MarksheetSummaryRow[];
   moduleName: string;
   showComparison: boolean;
-  onExport: () => void;
-  onClose: () => void;
+  /** Optional — when omitted the CSV control is hidden (the report page has its own). */
+  onExport?: () => void;
+  /** Optional — when omitted no close control is shown. */
+  onClose?: () => void;
   /** Roster rows unticked as ineligible — shown for transparency, never averaged. */
   excludedCount?: number;
 }
@@ -93,19 +95,23 @@ export function MarksheetSummary({
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={onExport}
-            className="flex items-center gap-1.5 h-8 px-3 text-[11px] font-bold bg-white border border-neutral-200 text-neutral-700 rounded-lg hover:bg-neutral-50 transition-colors cursor-pointer"
-          >
-            <Download className="h-3.5 w-3.5" />Export CSV
-          </button>
-          <button
-            onClick={onClose}
-            aria-label="Close summary"
-            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 cursor-pointer"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
+          {onExport && (
+            <button
+              onClick={onExport}
+              className="flex items-center gap-1.5 h-8 px-3 text-[11px] font-bold bg-white border border-neutral-200 text-neutral-700 rounded-lg hover:bg-neutral-50 transition-colors cursor-pointer"
+            >
+              <Download className="h-3.5 w-3.5" />Export CSV
+            </button>
+          )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              aria-label="Close summary"
+              className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
