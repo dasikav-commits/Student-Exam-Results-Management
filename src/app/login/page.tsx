@@ -193,6 +193,13 @@ export default function LoginPage() {
               )}
             </button>
           </form>
+
+          <p className="text-center text-sm text-slate-600">
+            New lecturer?{" "}
+            <Link href="/signup" className="font-bold text-indigo-600 hover:text-indigo-500">
+              Create an account
+            </Link>
+          </p>
         </div>
       </div>
     </div>

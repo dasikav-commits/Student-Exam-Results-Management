@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { hashPassword, verifyPassword } from "@/lib/password";
 
 export async function POST(request: Request) {
   try {
@@ -21,15 +22,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Check old password (plain text as requested for now)
-    if (user.passwordHash !== currentPassword) {
+    // Check old password (scrypt hash, or legacy plain text)
+    const currentOk = await verifyPassword(currentPassword, user.passwordHash);
+    if (!currentOk) {
       return NextResponse.json({ error: "Incorrect current password" }, { status: 403 });
     }
 
-    // Save new password
+    // Save new password, hashed
     await prisma.systemUser.update({
       where: { id: user.id },
-      data: { passwordHash: newPassword },
+      data: { passwordHash: await hashPassword(newPassword) },
     });
 
     return NextResponse.json({ success: true });

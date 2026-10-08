@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { hashPassword } from "@/lib/password";
 
 export const dynamic = "force-dynamic";
 
@@ -48,7 +49,7 @@ export async function POST(request: Request) {
         email: email.toLowerCase().trim(),
         fullName: fullName.trim(),
         role: role.toUpperCase(),
-        passwordHash: password,
+        passwordHash: await hashPassword(password),
         isHod: isHod ?? false,
         isActiveLec: isActiveLec ?? false,
         isExamLec: isExamLec ?? false,

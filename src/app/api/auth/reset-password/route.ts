@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { hashPassword } from "@/lib/password";
 
 export async function POST(request: Request) {
   try {
@@ -33,7 +34,7 @@ export async function POST(request: Request) {
     await prisma.systemUser.update({
       where: { id: user.id },
       data: {
-        passwordHash: newPassword, // Note: staying consistent with plain text for now
+        passwordHash: await hashPassword(newPassword),
         resetToken: null,
         resetTokenExpiry: null,
       },
