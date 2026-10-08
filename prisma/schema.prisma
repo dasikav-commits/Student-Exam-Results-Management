@@ -59,12 +59,15 @@ model StudentMark {
   studentIndex            String  @map("student_index")
   // { "comp_uuid": { "Q1": 15, "Q2": 10 } }
   caQuestionsMarks        Json    @default("{}") @map("ca_questions_marks")
-  // { "Q1": 20, "Q2": 18 } — Active Lecturer's final exam marks
+  // Sectioned Theory (MCQ + Essay) and Practical question marks; legacy flat Qn JSON is normalized on read.
   finalExamQuestionsMarks Json    @default("{}") @map("final_exam_questions_marks")
-  // { "Q1": 19, "Q2": 17 } — Second Examiner's independent final exam marks
+  // Second Examiner's independent marks in the same sectioned shape.
   secondExamMarks         Json    @default("{}") @map("second_exam_marks")
   // { "comp_uuid": true }
   isAbsentCa              Json    @default("{}") @map("is_absent_ca")
+  isAbsentTheory           Boolean @default(false) @map("is_absent_theory")
+  isAbsentPractical       Boolean @default(false) @map("is_absent_practical")
+  // Compatibility summary: true when both parent sections are absent.
   isAbsentFinal           Boolean @default(false) @map("is_absent_final")
   // Cohort eligibility. The HOD authorises the cohort size when the module is
   // created (modules.eligible_students), so every roster row starts eligible;

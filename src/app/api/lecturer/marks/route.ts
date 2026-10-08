@@ -5,11 +5,13 @@ import {
   hasAnyMark,
   isLecturerLocked,
   normaliseCaComponents,
+  normaliseFinalBlueprint,
+  normaliseFinalMarkRow,
   sanitiseMarkRow,
   toErrorMessage,
+  type MarkRowLike,
   type SanitisedRow,
 } from "@/lib/lecturer-marks";
-import type { FinalBlueprint } from "@/types/hod";
 
 export const dynamic = "force-dynamic";
 
@@ -28,12 +30,23 @@ export async function GET(request: Request) {
   }
 
   try {
+    const mod = await prisma.module.findUnique({
+      where: { code: moduleCode },
+      select: { stats: true },
+    });
+    if (!mod) return NextResponse.json({ error: `Module '${moduleCode}' not found` }, { status: 404 });
+    const stats = asModuleStats(mod.stats);
+    const finalBlueprint = normaliseFinalBlueprint(stats.finalBlueprint, stats.examTemplate);
+
     const marks = await prisma.studentMark.findMany({
       where: { moduleCode },
       orderBy: { studentIndex: "asc" },
     });
 
-    return NextResponse.json(marks);
+    return NextResponse.json(marks.map(row => ({
+      ...row,
+      ...normaliseFinalMarkRow(row as unknown as MarkRowLike, finalBlueprint),
+    })));
   } catch (error) {
     console.error("[marks/GET] Error:", toErrorMessage(error));
     return NextResponse.json({ error: "Failed to load marks" }, { status: 500 });
@@ -112,7 +125,7 @@ export async function POST(request: Request) {
 
     // Normalised so per-question maxima are known for both component groups.
     const caComponents = normaliseCaComponents(currentStats.caComponents);
-    const finalBlueprint = (currentStats.finalBlueprint ?? null) as FinalBlueprint | null;
+    const finalBlueprint = normaliseFinalBlueprint(currentStats.finalBlueprint, currentStats.examTemplate);
 
     // ── Sanitise the payload against the current blueprint ───────────────────
     // Last write wins if the client somehow sends the same index twice.
@@ -150,6 +163,8 @@ export async function POST(request: Request) {
         caQuestionsMarks: row.caQuestionsMarks,
         finalExamQuestionsMarks: row.finalExamQuestionsMarks,
         isAbsentCa: row.isAbsentCa,
+        isAbsentTheory: row.isAbsentTheory,
+        isAbsentPractical: row.isAbsentPractical,
         isAbsentFinal: row.isAbsentFinal,
         isEligible: row.isEligible,
       };

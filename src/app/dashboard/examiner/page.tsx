@@ -10,7 +10,20 @@ import {
   Lock, Users, Sliders, AlertTriangle, ChevronDown, Key, Flame,
   Eye, EyeOff, ArrowLeftRight, GitMerge, Clock, User, LogOut
 } from "lucide-react";
-import type { StudentMarkRecord, ModuleStats } from "@/types/hod";
+import type { FinalPaperMarks, FinalSectionKey, ModuleStats, StudentMarkRecord } from "@/types/hod";
+import {
+  computeFinalPaperTotals,
+  computeFinalSectionTotal,
+  finalSectionMaxScore,
+  getFinalPaperSections,
+  getFinalSectionBlueprint,
+  getFinalSectionMarks,
+  hasAnyMark,
+  isFinalParentAbsent,
+  normaliseFinalAbsence,
+  normaliseFinalBlueprint,
+  normaliseFinalMarks,
+} from "@/lib/lecturer-marks";
 
 interface ExamModule {
   id: number;
@@ -87,38 +100,48 @@ export default function ExaminerConsolePage() {
     }
   }, []);
 
-  // ── Blueprint helpers ──────────────────────────────────────────────────────
-  const finalBp = (activeModule?.stats as any)?.finalBlueprint;
-  const questionCount = finalBp?.totalQuestions ?? 8;
-  const marksPerQ = finalBp?.marksPerQuestion ?? 10;
-  const scoreMode: "SUM" | "AVG" = finalBp?.scoreMode ?? "SUM";
-  const questionsToAnswer: number = finalBp?.questionsToAnswer ?? questionCount;
-  const questionsList = Array.from({ length: questionCount }, (_, i) => `Q${i + 1}`);
+  // ── Sectioned final-paper blueprint ───────────────────────────────────────
+  const finalBp = normaliseFinalBlueprint(activeModule?.stats?.finalBlueprint, activeModule?.stats?.examTemplate);
+  const finalSections = finalBp.enabled
+    ? getFinalPaperSections(finalBp).filter(section => section.blueprint.questions.length > 0)
+    : [];
 
-  const calcTotal = (marks: Record<string, number>): number => {
-    const vals = Object.values(marks).slice(0, questionsToAnswer).map(v => Number(v) || 0);
-    const sum = vals.reduce((a, b) => a + b, 0);
-    return scoreMode === "AVG" && questionsToAnswer > 0 ? sum / questionsToAnswer : sum;
-  };
+  const updateSecondMark = (studentIndex: string, sectionKey: FinalSectionKey, questionId: string, raw: string) => {
+    const section = getFinalSectionBlueprint(finalBp, sectionKey);
+    const question = section.questions.find(item => item.id === questionId);
+    if (!question) return;
+    const value = raw.trim() === "" ? null : Number(raw);
+    if (value !== null && !Number.isFinite(value)) return;
 
-  // ── Update SECOND EXAM marks (examiner's own entry) ────────────────────────
-  const updateSecondMark = (studentIndex: string, q: string, val: number) => {
-    setStudents(prev => prev.map(s => {
-      if (s.studentIndex !== studentIndex) return s;
-      const sm = { ...(s.secondExamMarks ?? {}), [q]: Math.min(marksPerQ, Math.max(0, val)) };
-      return { ...s, secondExamMarks: sm };
+    setStudents(previous => previous.map(student => {
+      if (student.studentIndex !== studentIndex || isFinalParentAbsent(student, sectionKey === "practical" ? "practical" : "theory")) {
+        return student;
+      }
+      const marks = normaliseFinalMarks(student.secondExamMarks, finalBp);
+      const sectionMarks = { ...getFinalSectionMarks(marks, sectionKey) } as Record<string, number>;
+      if (value === null) delete sectionMarks[questionId];
+      else sectionMarks[questionId] = Math.min(question.maxMarks, Math.max(0, value));
+      const nextMarks: FinalPaperMarks = sectionKey === "practical"
+        ? { ...marks, practical: sectionMarks }
+        : { ...marks, theory: { ...marks.theory, [sectionKey]: sectionMarks } };
+      return { ...student, secondExamMarks: nextMarks };
     }));
   };
 
-  // ── Stats ──────────────────────────────────────────────────────────────────
-  const absentCount = students.filter(s => s.isAbsentFinal).length;
+  const totalForMarks = (student: StudentMarkRecord, marks: unknown) =>
+    computeFinalPaperTotals(student, finalBp, marks).rawTotal;
+  const weightedTotalForMarks = (student: StudentMarkRecord, marks: unknown) =>
+    computeFinalPaperTotals(student, finalBp, marks).weighted;
 
-  const flaggedStudents = students.filter(s => {
-    if (s.isAbsentFinal) return false;
-    const activeLecTotal = calcTotal(s.finalExamQuestionsMarks ?? {});
-    const examTotal = calcTotal(s.secondExamMarks ?? {});
-    const hasExamMarks = Object.keys(s.secondExamMarks ?? {}).length > 0;
-    return hasExamMarks && Math.abs(activeLecTotal - examTotal) > VARIANCE_THRESHOLD;
+  // ── Stats ──────────────────────────────────────────────────────────────────
+  const absentTheoryCount = students.filter(student => normaliseFinalAbsence(student).isAbsentTheory).length;
+  const absentPracticalCount = students.filter(student => normaliseFinalAbsence(student).isAbsentPractical).length;
+
+  const flaggedStudents = students.filter(student => {
+    if (normaliseFinalAbsence(student).isAbsentFinal || !hasAnyMark(student.secondExamMarks)) return false;
+    const lecturerTotal = weightedTotalForMarks(student, student.finalExamQuestionsMarks);
+    const examinerTotal = weightedTotalForMarks(student, student.secondExamMarks);
+    return Math.abs(lecturerTotal - examinerTotal) > VARIANCE_THRESHOLD;
   });
 
   const moduleStatus = (activeModule?.stats as any)?.marksheetStatus as string | undefined;
@@ -140,8 +163,10 @@ export default function ExaminerConsolePage() {
           finalize,
           students: students.map(s => ({
             studentIndex: s.studentIndex,
-            secondExamMarks: s.secondExamMarks ?? {},
-            isAbsentFinal: s.isAbsentFinal,
+            secondExamMarks: s.secondExamMarks ?? { theory: { mcq: {}, essay: {} }, practical: {} },
+            isAbsentTheory: normaliseFinalAbsence(s).isAbsentTheory,
+            isAbsentPractical: normaliseFinalAbsence(s).isAbsentPractical,
+            isAbsentFinal: normaliseFinalAbsence(s).isAbsentFinal,
           })),
         }),
       });
@@ -299,7 +324,8 @@ export default function ExaminerConsolePage() {
               <div className="p-2.5 bg-indigo-50 rounded-lg"><Users className="h-5 w-5 text-indigo-600" /></div>
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Total Students</p>
-                <p className="text-xl font-black">{students.length} <span className="text-xs font-medium text-neutral-400">({absentCount} AB)</span></p>
+                <p className="text-xl font-black">{students.length}</p>
+                <p className="text-[10px] font-semibold text-neutral-500 mt-0.5">Theory AB {absentTheoryCount} · Practical AB {absentPracticalCount}</p>
               </div>
             </div>
 
@@ -392,7 +418,10 @@ export default function ExaminerConsolePage() {
                       )}
                     </div>
                     <p className="text-xs text-neutral-400 mt-0.5">
-                      {questionsList.length} questions · {questionsToAnswer} to answer · {marksPerQ} marks/q · {scoreMode} mode
+                      {finalSections.length} final-paper sections · {finalSections.reduce((sum, section) => sum + finalSectionMaxScore(section.blueprint), 0)} required maximum marks · weight {finalBp.weightage}%
+                    </p>
+                    <p className="text-[10px] text-neutral-500 mt-1">
+                      {finalSections.map(section => `${section.label}: ${section.blueprint.questions.length} questions / ${finalSectionMaxScore(section.blueprint)} required max`).join(" · ")}
                     </p>
                     {activeModule.assignedActiveLec && (
                       <p className="text-[11px] text-neutral-500 mt-1">Active Lec: <span className="font-bold text-neutral-700">{activeModule.assignedActiveLec.fullName}</span></p>
@@ -420,133 +449,145 @@ export default function ExaminerConsolePage() {
                     </div>
                   ) : (
                     <div className="border border-neutral-200 rounded-xl overflow-auto">
-                      <table className="w-full text-xs border-collapse">
-                        <thead>
-                          <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200 text-center">
-                            <th className="px-4 py-3 w-10 text-left">#</th>
-                            <th className="px-4 py-3 w-32 text-left">Student ID</th>
+                      {finalSections.length === 0 ? (
+                        <p className="p-8 text-center text-sm italic text-neutral-500">No final-paper questions are configured for this module.</p>
+                      ) : (
+                        <table className="w-full text-xs border-collapse min-w-max">
+                          <thead>
+                            <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-500 uppercase tracking-wider border-b border-neutral-200 text-center">
+                              <th rowSpan={2} className="px-4 py-3 w-10 text-left">#</th>
+                              <th rowSpan={2} className="px-4 py-3 w-32 text-left">Student ID</th>
+                              <th rowSpan={2} className="px-3 py-3 text-center">Attendance</th>
+                              {finalSections.map(section => {
+                                const columns = section.blueprint.questions.length + 1
+                                  + (showActiveLecMarks ? section.blueprint.questions.length + 1 : 0);
+                                return (
+                                  <th key={section.key} colSpan={columns} className="px-3 py-2 bg-neutral-100/70 text-neutral-700 border-l border-neutral-200">
+                                    <span className="inline-flex items-center gap-1.5"><ArrowLeftRight className="h-3 w-3" />{section.label}</span>
+                                    <span className="block mt-0.5 text-[9px] font-medium normal-case text-neutral-500">{section.blueprint.questions.length} questions · {finalSectionMaxScore(section.blueprint)} required max</span>
+                                  </th>
+                                );
+                              })}
+                              {showActiveLecMarks && <th rowSpan={2} title="Difference between weighted Final Paper contributions" className="px-3 py-3 w-24 bg-rose-50/60 text-rose-700">Δ Weighted</th>}
+                            </tr>
+                            <tr className="bg-neutral-50 text-[9px] font-bold uppercase tracking-wide text-neutral-500 border-b border-neutral-200 text-center">
+                              {finalSections.map(section => (
+                                <React.Fragment key={section.key}>
+                                  {showActiveLecMarks && (
+                                    <>
+                                      {section.blueprint.questions.map(question => (
+                                        <th key={`lec-${section.key}-${question.id}`} className="px-2 py-2 bg-indigo-50/60 text-indigo-700">
+                                          <span className="block text-[8px] font-normal text-indigo-400">Lec</span>{question.id}<span className="block text-[9px] font-normal text-neutral-400">/{question.maxMarks}</span>
+                                        </th>
+                                      ))}
+                                      <th className="px-3 py-2 bg-indigo-100/60 text-indigo-700">Lec total</th>
+                                    </>
+                                  )}
+                                  {section.blueprint.questions.map(question => (
+                                    <th key={`exam-${section.key}-${question.id}`} className="px-2 py-2 bg-amber-50/70 text-amber-800">
+                                      <span className="block text-[8px] font-normal text-amber-500">2nd</span>{question.id}<span className="block text-[9px] font-normal text-neutral-400">/{question.maxMarks}</span>
+                                    </th>
+                                  ))}
+                                  <th className="px-3 py-2 bg-amber-100/60 text-amber-800">2nd total</th>
+                                </React.Fragment>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-100">
+                            {students.map((student, index) => {
+                              const absence = normaliseFinalAbsence(student);
+                              const wholePaperAbsent = absence.isAbsentFinal;
+                              const lecturerTotal = totalForMarks(student, student.finalExamQuestionsMarks);
+                              const examinerTotal = totalForMarks(student, student.secondExamMarks);
+                              const hasExamMarks = hasAnyMark(student.secondExamMarks);
+                              const variance = showActiveLecMarks && !wholePaperAbsent && hasExamMarks
+                                ? Math.abs(weightedTotalForMarks(student, student.finalExamQuestionsMarks) - weightedTotalForMarks(student, student.secondExamMarks))
+                                : null;
+                              const flagged = variance !== null && variance > VARIANCE_THRESHOLD;
 
-                            {/* Active Lec columns (guided reference) */}
-                            {showActiveLecMarks && questionsList.map(q => (
-                              <th key={`lec-${q}`} className="px-2 py-3 bg-indigo-50/60 text-indigo-700 w-14">
-                                <span className="block text-[8px] font-normal text-indigo-400 leading-none mb-0.5">Lec</span>
-                                {q}<span className="block text-[9px] text-neutral-400 font-normal">/{marksPerQ}</span>
-                              </th>
-                            ))}
-                            {showActiveLecMarks && (
-                              <th className="px-4 py-3 bg-indigo-100/60 text-indigo-700 font-extrabold w-16">
-                                <span className="block text-[8px] font-normal text-indigo-400 leading-none mb-0.5">Lec</span>
-                                Total
-                              </th>
-                            )}
-
-                            {/* Divider header */}
-                            {showActiveLecMarks && (
-                              <th className="px-2 py-3 w-8 bg-neutral-100">
-                                <ArrowLeftRight className="h-3 w-3 mx-auto text-neutral-400" />
-                              </th>
-                            )}
-
-                            {/* Second Examiner columns (editable) */}
-                            {questionsList.map(q => (
-                              <th key={`exam-${q}`} className="px-2 py-3 bg-amber-50/70 text-amber-800 w-14">
-                                <span className="block text-[8px] font-normal text-amber-500 leading-none mb-0.5">2nd</span>
-                                {q}<span className="block text-[9px] text-neutral-400 font-normal">/{marksPerQ}</span>
-                              </th>
-                            ))}
-                            <th className="px-4 py-3 bg-amber-100/60 text-amber-800 font-extrabold w-16">
-                              <span className="block text-[8px] font-normal text-amber-500 leading-none mb-0.5">2nd</span>
-                              Total
-                            </th>
-
-                            {/* Variance column (only shown if both sets exist) */}
-                            {showActiveLecMarks && (
-                              <th className="px-4 py-3 text-center w-16 bg-rose-50/50 text-rose-700">Δ Var</th>
-                            )}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-100">
-                          {students.map((s, idx) => {
-                            const absent = s.isAbsentFinal;
-                            const lecFm = s.finalExamQuestionsMarks ?? {};
-                            const examFm = s.secondExamMarks ?? {};
-                            const lecTotal = absent ? null : calcTotal(lecFm);
-                            const examTotal = absent ? null : calcTotal(examFm);
-                            const hasExamMarks = Object.keys(examFm).length > 0;
-                            const variance = lecTotal !== null && examTotal !== null && hasExamMarks
-                              ? Math.abs(lecTotal - examTotal)
-                              : null;
-                            const flagged = variance !== null && variance > VARIANCE_THRESHOLD;
-
-                            return (
-                              <tr key={s.studentIndex} className={`transition-colors ${absent ? "bg-neutral-100/60 text-neutral-400 line-through" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/30"}`}>
-                                <td className="px-4 py-3 font-bold text-neutral-400">{idx + 1}</td>
-                                <td className="px-4 py-3 font-bold tracking-wider uppercase">{s.studentIndex}</td>
-
-                                {/* Active Lec read-only guided cells */}
-                                {showActiveLecMarks && questionsList.map(q => (
-                                  <td key={`lec-${q}`} className="px-2 py-3 bg-indigo-50/20 text-center">
-                                    {absent ? (
-                                      <span className="text-neutral-400 font-bold text-[11px]">AB</span>
-                                    ) : (
-                                      <span className="inline-block w-10 py-1 text-center text-xs font-bold text-indigo-700 bg-indigo-50 rounded border border-indigo-100">
-                                        {lecFm[q] ?? "—"}
-                                      </span>
-                                    )}
+                              return (
+                                <tr key={student.studentIndex} className={`transition-colors ${wholePaperAbsent ? "bg-neutral-100/60 text-neutral-400" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/30"}`}>
+                                  <td className="px-4 py-3 font-bold text-neutral-400">{index + 1}</td>
+                                  <td className="px-4 py-3 font-bold tracking-wider uppercase">{student.studentIndex}</td>
+                                  <td className="px-3 py-3 text-center whitespace-nowrap">
+                                    <div className="flex flex-wrap justify-center gap-1">
+                                      {absence.isAbsentTheory
+                                        ? <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">THEORY AB</span>
+                                        : <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700">THEORY</span>}
+                                      {absence.isAbsentPractical
+                                        ? <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">PRACTICAL AB</span>
+                                        : <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700">PRACTICAL</span>}
+                                    </div>
                                   </td>
-                                ))}
-                                {showActiveLecMarks && (
-                                  <td className="px-4 py-3 text-center font-extrabold text-indigo-600 bg-indigo-50/20">
-                                    {absent ? "AB" : (lecTotal?.toFixed(1) ?? "—")}
-                                  </td>
-                                )}
 
-                                {/* Divider */}
-                                {showActiveLecMarks && (
-                                  <td className="px-1 py-3 bg-neutral-100/80" />
-                                )}
+                                  {finalSections.map(section => {
+                                    const sectionAbsent = section.parent === "theory"
+                                      ? absence.isAbsentTheory
+                                      : absence.isAbsentPractical;
+                                    const lecturerMarks = getFinalSectionMarks(student.finalExamQuestionsMarks, section.key) as Record<string, number>;
+                                    const examinerMarks = getFinalSectionMarks(student.secondExamMarks, section.key) as Record<string, number>;
+                                    const hasSectionMarks = hasAnyMark(examinerMarks);
+                                    const lecturerSectionHasMarks = hasAnyMark(lecturerMarks);
+                                    const lecturerSectionTotal = computeFinalSectionTotal(lecturerMarks, section.blueprint);
+                                    const examinerSectionTotal = computeFinalSectionTotal(examinerMarks, section.blueprint);
+                                    return (
+                                      <React.Fragment key={`${student.studentIndex}-${section.key}`}>
+                                        {showActiveLecMarks && (
+                                          <>
+                                            {section.blueprint.questions.map(question => (
+                                              <td key={`lec-${section.key}-${question.id}`} className="px-2 py-2 bg-indigo-50/20 text-center">
+                                                {sectionAbsent ? <span className="text-neutral-400 font-bold">AB</span> : (
+                                                  <span className="inline-block min-w-9 px-1.5 py-1 text-center text-[11px] font-bold text-indigo-700 bg-indigo-50 rounded border border-indigo-100">
+                                                    {lecturerMarks[question.id] ?? "—"}
+                                                  </span>
+                                                )}
+                                              </td>
+                                            ))}
+                                            <td className="px-3 py-2 text-center font-extrabold text-indigo-700 bg-indigo-50/20">
+                                              {sectionAbsent ? "AB" : lecturerSectionHasMarks ? lecturerSectionTotal.toFixed(1) : <span className="text-neutral-300">—</span>}
+                                            </td>
+                                          </>
+                                        )}
+                                        {section.blueprint.questions.map(question => (
+                                          <td key={`exam-${section.key}-${question.id}`} className="px-1.5 py-2 bg-amber-50/20 text-center">
+                                            {sectionAbsent ? <span className="text-neutral-400 font-bold">AB</span> : (
+                                              <input
+                                                type="number"
+                                                min="0"
+                                                max={question.maxMarks}
+                                                step="any"
+                                                value={examinerMarks[question.id] ?? ""}
+                                                placeholder="—"
+                                                aria-label={`${student.studentIndex} ${section.label} ${question.id} out of ${question.maxMarks}`}
+                                                disabled={activeModule.isFrozen || isFinalized || isReconciliationNeeded || isReconciled || sectionAbsent}
+                                                onChange={event => updateSecondMark(student.studentIndex, section.key, question.id, event.target.value)}
+                                                className="w-14 bg-white border border-amber-200 rounded py-1 text-center font-bold focus:outline-none focus:border-amber-500 disabled:opacity-40"
+                                              />
+                                            )}
+                                          </td>
+                                        ))}
+                                        <td className="px-3 py-2 text-center font-extrabold text-amber-800 bg-amber-50/20">
+                                          {sectionAbsent ? "AB" : hasSectionMarks ? examinerSectionTotal.toFixed(1) : <span className="text-neutral-300 font-normal">—</span>}
+                                        </td>
+                                      </React.Fragment>
+                                    );
+                                  })}
 
-                                {/* Second Examiner editable cells */}
-                                {questionsList.map(q => (
-                                  <td key={`exam-${q}`} className="px-1.5 py-2 bg-amber-50/20 text-center">
-                                    {absent ? (
-                                      <span className="text-neutral-400 font-bold text-[11px]">AB</span>
-                                    ) : (
-                                      <input
-                                        type="number" min="0" max={marksPerQ}
-                                        value={examFm[q] ?? ""}
-                                        placeholder="0"
-                                        disabled={activeModule.isFrozen || isFinalized || isReconciliationNeeded || isReconciled}
-                                        onChange={e => updateSecondMark(s.studentIndex, q, Number(e.target.value))}
-                                        className="w-12 bg-white border border-amber-200 rounded py-1 text-center font-bold focus:outline-none focus:border-amber-500 disabled:opacity-40"
-                                      />
-                                    )}
-                                  </td>
-                                ))}
-                                <td className="px-4 py-3 text-center font-extrabold text-amber-700 bg-amber-50/20">
-                                  {absent ? "AB" : (hasExamMarks ? examTotal?.toFixed(1) : <span className="text-neutral-300 font-normal text-xs">—</span>)}
-                                </td>
-
-                                {/* Variance */}
-                                {showActiveLecMarks && (
-                                  <td className="px-4 py-3 text-center bg-rose-50/20">
-                                    {absent || variance === null ? (
-                                      <span className="text-neutral-300 text-xs">—</span>
-                                    ) : flagged ? (
-                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-0.5 rounded-full">
-                                        <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse inline-block" />
-                                        {variance.toFixed(1)}
-                                      </span>
-                                    ) : (
-                                      <span className="text-[10px] font-bold text-emerald-600">{variance.toFixed(1)}</span>
-                                    )}
-                                  </td>
-                                )}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                                  {showActiveLecMarks && (
+                                    <td className="px-3 py-3 text-center bg-rose-50/20">
+                                      {wholePaperAbsent || variance === null ? <span className="text-neutral-300">—</span> : flagged ? (
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-0.5 rounded-full">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse inline-block" />{variance.toFixed(1)}
+                                        </span>
+                                      ) : <span className="text-[10px] font-bold text-emerald-600">{variance.toFixed(1)}</span>}
+                                    </td>
+                                  )}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
                     </div>
                   )}
 

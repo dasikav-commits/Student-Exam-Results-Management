@@ -29,6 +29,12 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
+## Final-paper schema rollout
+
+Final-paper absence is now stored separately for Theory and Practical in `student_marks.is_absent_theory` and `student_marks.is_absent_practical`. Apply the Prisma schema change in the intended deployment/database environment before using the redesigned marking flow. Existing `is_absent_final` whole-paper absences remain recognized as absent in both sections during compatibility reads.
+
+Do not run the schema-push command against an unintended database; review the target environment and schema diff first.
+
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.

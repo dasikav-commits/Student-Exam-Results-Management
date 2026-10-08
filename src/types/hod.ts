@@ -45,20 +45,51 @@ export interface CaComponent {
   questionsToAnswer?: number;
 }
 
-/** Final exam blueprint block */
+/** Final-paper sections use stable question IDs and an independent maximum per question. */
+export type FinalSectionKey = "mcq" | "essay" | "practical";
+export type FinalParentSection = "theory" | "practical";
+
+export interface FinalQuestionDescriptor {
+  id: string;      // "Q1", "Q2", ... (unique within its section)
+  maxMarks: number;
+}
+
+export interface FinalSectionBlueprint {
+  questions: FinalQuestionDescriptor[];
+  /** First N questions are required; defaults to all configured questions. */
+  questionsToAnswer: number;
+}
+
+/**
+ * Final-paper blueprint. Theory contains MCQ and Essay sections; Practical is
+ * a separate parent section. The paper has one overall weightage. A section's
+ * share of that weight is proportional to its required maximum marks.
+ */
 export interface FinalBlueprint {
   enabled: boolean;
   weightage: number;         // % (contributes to 100% total with CA components)
-  totalQuestions: number;
-  marksPerQuestion: number;
-  questionsToAnswer: number;
-  scoreMode: "SUM" | "AVG";
+  theory: {
+    mcq: FinalSectionBlueprint;
+    essay: FinalSectionBlueprint;
+  };
+  practical: FinalSectionBlueprint;
 }
 
-/** Auto-generated exam template from finalBlueprint.totalQuestions */
+/** Marks for each question in the sectioned final paper. */
+export interface FinalPaperMarks {
+  theory: {
+    mcq: Record<string, number>;
+    essay: Record<string, number>;
+  };
+  practical: Record<string, number>;
+}
+
+/** Auto-generated examiner template, tagged by the section that owns the question. */
 export interface ExamQuestionConfig {
-  id: string;      // "Q1", "Q2", ...
+  id: string;
   maxMarks: number;
+  section: FinalSectionKey;
+  parent: FinalParentSection;
 }
 
 /** Parsed Module.stats shape */
@@ -130,11 +161,15 @@ export interface StudentMarkRecord {
   moduleCode: string;
   studentIndex: string;
   caQuestionsMarks: Record<string, Record<string, number>>;
-  /** Active Lecturer's final exam per-question marks */
-  finalExamQuestionsMarks: Record<string, number>;
-  /** Second Examiner's independent final exam per-question marks */
-  secondExamMarks: Record<string, number>;
+  /** Active Lecturer's final-paper marks, grouped by section. */
+  finalExamQuestionsMarks: FinalPaperMarks;
+  /** Second Examiner's independent final-paper marks, grouped by section. */
+  secondExamMarks: FinalPaperMarks;
   isAbsentCa: Record<string, boolean>;
+  /** Absence is recorded at the paper-parent level; Theory covers MCQ and Essay. */
+  isAbsentTheory: boolean;
+  isAbsentPractical: boolean;
+  /** Compatibility summary: true only when both Theory and Practical are absent. */
   isAbsentFinal: boolean;
   /**
    * Cohort eligibility. Defaults to true (the HOD authorises the cohort when

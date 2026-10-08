@@ -15,6 +15,8 @@ export interface MarksheetSummaryRow {
   finalMax: number;
   /** Percentage of required cells captured for this student. */
   progress: number;
+  isAbsentTheory: boolean;
+  isAbsentPractical: boolean;
   isAbsentFinal: boolean;
   /** Second Examiner's raw final total (only shown after second checking). */
   examTotal?: number | null;
@@ -119,8 +121,8 @@ export function MarksheetSummary({
               <th className="px-4 py-3 text-center">Module Mark</th>
               {showComparison && (
                 <>
-                  <th className="px-4 py-3 text-center bg-amber-50/60 text-amber-700">2nd Final</th>
-                  <th className="px-4 py-3 text-center bg-rose-50/50 text-rose-700">Δ Var</th>
+                  <th className="px-4 py-3 text-center bg-amber-50/60 text-amber-700">2nd Final raw</th>
+                  <th className="px-4 py-3 text-center bg-rose-50/50 text-rose-700">Δ Weighted</th>
                 </>
               )}
               <th className="px-4 py-3 text-center">Flags</th>
@@ -132,8 +134,11 @@ export function MarksheetSummary({
                 <td className="px-4 py-2.5 font-bold text-neutral-400">{idx + 1}</td>
                 <td className="px-4 py-2.5 font-bold tracking-wider uppercase">
                   {row.studentIndex}
-                  {row.isAbsentFinal && (
-                    <span className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">AB FINAL</span>
+                  {row.isAbsentTheory && (
+                    <span className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">THEORY AB</span>
+                  )}
+                  {row.isAbsentPractical && (
+                    <span className="ml-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">PRACTICAL AB</span>
                   )}
                 </td>
                 <td className="px-4 py-2.5">
@@ -151,7 +156,9 @@ export function MarksheetSummary({
                 </td>
                 <td className="px-4 py-2.5 text-center font-bold text-neutral-700">{row.ca.toFixed(1)}</td>
                 <td className="px-4 py-2.5 text-center font-bold text-neutral-700">
-                  {row.isAbsentFinal ? <span className="text-neutral-300">—</span> : row.final.toFixed(1)}
+                  {row.isAbsentFinal ? <span className="text-neutral-300">—</span> : (
+                    <span>{row.final.toFixed(1)}{(row.isAbsentTheory || row.isAbsentPractical) && <span className="ml-1 text-[9px] font-bold text-rose-500">partial AB</span>}</span>
+                  )}
                 </td>
                 <td className="px-4 py-2.5 text-center">
                   <span className={`inline-block min-w-[3.25rem] px-2 py-0.5 rounded-lg border font-extrabold ${scoreTone(row.total)}`}>

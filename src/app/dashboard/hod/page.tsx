@@ -7,7 +7,11 @@ import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import {
   computeWeightedScores,
+  hasAnyMark,
   normaliseCaComponents,
+  normaliseFinalAbsence,
+  normaliseFinalBlueprint,
+  normaliseFinalMarkRow,
   type MarkRowLike,
 } from "@/lib/lecturer-marks";
 import type { CaComponent as SharedCaComponent, FinalBlueprint as SharedFinalBlueprint } from "@/types/hod";
@@ -71,12 +75,13 @@ function calcStudentTotal(
   finalBlueprint: HodFinalBlueprint | undefined
 ): { caTotal: number; examTotal: number; grandTotal: number } {
   const components = normaliseCaComponents(caComponents);
+  const blueprint = normaliseFinalBlueprint(finalBlueprint);
+  const normalized = normaliseFinalMarkRow(student as MarkRowLike, blueprint);
+  const examSource = hasAnyMark(normalized.secondExamMarks)
+    ? { ...student, ...normalized, finalExamQuestionsMarks: normalized.secondExamMarks }
+    : { ...student, ...normalized, finalExamQuestionsMarks: normalized.finalExamQuestionsMarks };
 
-  const examSource = Object.keys(student?.secondExamMarks ?? {}).length > 0
-    ? { ...student, finalExamQuestionsMarks: student.secondExamMarks }
-    : student;
-
-  const weighted = computeWeightedScores(examSource as MarkRowLike, components, finalBlueprint);
+  const weighted = computeWeightedScores(examSource as MarkRowLike, components, blueprint);
   return { caTotal: weighted.ca, examTotal: weighted.final, grandTotal: weighted.total };
 }
 
@@ -847,7 +852,8 @@ export default function HodConsolePage() {
                       const finalBlueprint = viewResultsModule.stats?.finalBlueprint;
                       const { caTotal, examTotal, grandTotal } = calcStudentTotal(s, caComponents, finalBlueprint);
                       const caAbsent = Object.values(s.isAbsentCa ?? {}).some(v => v === true);
-                      const anyAbsent = caAbsent || s.isAbsentFinal;
+                      const finalAbsence = normaliseFinalAbsence(s);
+                      const anyAbsent = caAbsent || finalAbsence.isAbsentTheory || finalAbsence.isAbsentPractical;
                       return (
                         <tr key={s.studentIndex} className={`transition-colors ${anyAbsent ? "bg-rose-50/30" : "hover:bg-neutral-50/40"}`}>
                           <td className="px-4 py-3 text-neutral-400 font-bold">{idx + 1}</td>
@@ -855,7 +861,8 @@ export default function HodConsolePage() {
                           <td className="px-4 py-3 text-center">
                             <div className="flex justify-center gap-1.5 flex-wrap">
                               {caAbsent && <span className="text-[9px] bg-rose-100 text-rose-700 font-bold px-1.5 py-0.5 rounded">CA-AB</span>}
-                              {s.isAbsentFinal && <span className="text-[9px] bg-rose-100 text-rose-700 font-bold px-1.5 py-0.5 rounded">EXAM-AB</span>}
+                              {finalAbsence.isAbsentTheory && <span className="text-[9px] bg-rose-100 text-rose-700 font-bold px-1.5 py-0.5 rounded">THEORY-AB</span>}
+                              {finalAbsence.isAbsentPractical && <span className="text-[9px] bg-rose-100 text-rose-700 font-bold px-1.5 py-0.5 rounded">PRACTICAL-AB</span>}
                               {!anyAbsent && <span className="text-emerald-600 text-[10px] font-bold">✓</span>}
                             </div>
                           </td>
@@ -863,7 +870,9 @@ export default function HodConsolePage() {
                             {caAbsent ? <span className="text-rose-400 text-[10px] font-bold">ABSENT</span> : caTotal.toFixed(1)}
                           </td>
                           <td className="px-4 py-3 text-right font-semibold tabular-nums">
-                            {s.isAbsentFinal ? <span className="text-rose-400 text-[10px] font-bold">ABSENT</span> : examTotal.toFixed(1)}
+                            {finalAbsence.isAbsentFinal
+                              ? <span className="text-rose-400 text-[10px] font-bold">ABSENT</span>
+                              : <span>{examTotal.toFixed(1)}{(finalAbsence.isAbsentTheory || finalAbsence.isAbsentPractical) && <span className="ml-1 text-[9px] font-bold text-rose-500">partial AB</span>}</span>}
                           </td>
                           <td className={`px-4 py-3 text-right font-black tabular-nums text-sm bg-indigo-50/40 ${
                             grandTotal >= 75 ? "text-emerald-700" :
