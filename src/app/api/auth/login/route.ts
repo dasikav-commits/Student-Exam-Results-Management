@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { verifyPassword } from "@/lib/password";
 
 export async function POST(request: Request) {
   try {
@@ -20,8 +21,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // Verify password (plain-text comparison)
-    if (!dbUser.passwordHash || password !== dbUser.passwordHash) {
+    // Verify password (scrypt hash, or legacy plain text for unmigrated accounts)
+    const passwordOk = await verifyPassword(password, dbUser.passwordHash);
+    if (!passwordOk) {
       return NextResponse.json(
         { error: "Incorrect password. Please try again." },
         { status: 401 }
