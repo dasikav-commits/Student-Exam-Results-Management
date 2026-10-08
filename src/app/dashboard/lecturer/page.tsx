@@ -10,6 +10,7 @@ import { MarksheetSummary, type MarksheetSummaryRow } from "@/components/lecture
 import { ComponentMarksDialog } from "@/components/lecturer/ComponentMarksDialog";
 import { FinalSectionMarksDialog } from "@/components/lecturer/FinalSectionMarksDialog";
 import { openCaGridPrintWindow } from "@/lib/ca-print";
+import { openMarksheetPrintWindow } from "@/lib/marksheet-print";
 import {
   downloadMarksTemplate,
   emptyMarksExcelRow,
@@ -85,7 +86,7 @@ import {
 } from "@/lib/lecturer-marks";
 
 // ─── Local state types ────────────────────────────────────────────────────────
-type MainTab = "blueprint" | "marks";
+type MainTab = "blueprint" | "marks" | "marksheet";
 type BlueprintSubTab = "ca" | "final";
 type MarksSubTab = "ca_marks" | "final_marks";
 
@@ -198,7 +199,6 @@ export default function LecturerConsolePage() {
   const activeModuleCodeRef = useRef<string | null>(null);
   const moduleSelectionVersionRef = useRef(0);
   const excelImportInputRef = useRef<HTMLInputElement>(null);
-  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isIssuesOpen, setIsIssuesOpen] = useState(false);
   /** Rows unlocked by the Action-column edit button; their component dialogs open in edit mode. */
   const [editingRows, setEditingRows] = useState<Set<string>>(new Set());
@@ -242,7 +242,6 @@ export default function LecturerConsolePage() {
     setIsImportingExcel(false);
     setCohortInput(String(mod.eligibleStudents ?? 0));
     setIsEditingCohort(false);
-    setIsSummaryOpen(false);
     setIsIssuesOpen(false);
     setEditingRows(new Set());
     setPopupTarget(null);
@@ -1390,6 +1389,23 @@ export default function LecturerConsolePage() {
     }
   };
 
+  /** Printable full Marksheet (all eligible rows, every block) for browser "Save as PDF". */
+  const handleExportMarksheetPdf = () => {
+    if (!activeModule) return;
+    const opened = openMarksheetPrintWindow({
+      moduleCode: activeModule.code,
+      moduleName: activeModule.name,
+      components: caComponents,
+      finalBlueprint,
+      rows: visibleStudents.map(entry => entry.row),
+      printedBy: user?.fullName,
+      statusLabel: statusLabel(activeStatus),
+    });
+    if (!opened) {
+      setFeedback({ type: "error", text: "The browser blocked the print window — allow pop-ups and try again." });
+    }
+  };
+
   // ── Loading screen ─────────────────────────────────────────────────────────
   if (isAuthLoading || (isModulesLoading && !!user?.email)) {
     return (
@@ -1452,6 +1468,104 @@ export default function LecturerConsolePage() {
   const pendingReconciliationCount = modules.filter(
     m => statsOf(m).marksheetStatus === "RECONCILIATION_NEEDED" && !statsOf(m).lecturerApproved
   ).length;
+
+  /** Shared Save / Send / Recall controls used on the Ledger and the Marksheet page. */
+  const renderSubmitBar = (variant: "ledger" | "marksheet") => (
+    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-5 border-t border-neutral-100 mt-5">
+      <div className="text-[11px] text-neutral-400 max-w-md">
+  <strong>Save Marks</strong> stores your ledger.
+  {isSecondChecking
+    ? " The marksheet is with the Examiner — recall it before making corrections."
+    : " When every eligible row is complete, use "}
+  {!isSecondChecking && <strong>Send to…</strong>}
+  {!isSecondChecking && " to submit it to Faculty or the HOD."}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => saveMarks()}
+          disabled={isSaving || (!isDirty && removedIndexes.length === 0)}
+          title={!isDirty && removedIndexes.length === 0 ? "Everything is already saved" : ""}
+          className="flex items-center gap-2 h-10 px-5 text-xs font-bold bg-[#1a1a1a] text-white rounded-xl hover:bg-neutral-800 disabled:opacity-40 transition-all cursor-pointer"
+        >
+          {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+          Save Marks
+        </button>
+        {!isSecondChecking && (
+          <div className="relative">
+            <button
+              onClick={() => setIsSendMenuOpen(open => !open)}
+              disabled={isSubmitting || isSaving}
+              title={
+                errorCount > 0
+                  ? `${errorCount} issue(s) must be fixed before sending`
+                  : "Choose who receives this submission"
+              }
+              className="flex items-center gap-2 h-10 px-5 text-xs font-bold bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-40 transition-all cursor-pointer"
+            >
+              {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              Send to…
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isSendMenuOpen ? "rotate-180" : ""}`} />
+            </button>
+
+            {isSendMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setIsSendMenuOpen(false)} aria-hidden="true" />
+                <div className="absolute right-0 bottom-full mb-2 w-80 bg-white border border-neutral-200 rounded-xl shadow-xl z-30 p-1.5 space-y-1">
+                  <p className="px-3 pt-1.5 pb-1 text-[9px] font-black uppercase tracking-wider text-neutral-400">
+                    Submit this marksheet to
+                  </p>
+                  <button
+                    onClick={() => { setIsSendMenuOpen(false); handleSubmitForReview("FACULTY"); }}
+                    className="w-full flex items-start gap-2.5 px-3 py-2.5 rounded-lg hover:bg-indigo-50 text-left cursor-pointer transition-colors"
+                  >
+                    <GraduationCap className="h-4 w-4 mt-0.5 text-indigo-600 shrink-0" />
+                    <span>
+                      <span className="block text-xs font-bold text-neutral-800">Send to Faculty</span>
+                      <span className="block text-[10px] text-neutral-500 mt-0.5">
+                        The Second Examiner independently marks the final paper.
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => { setIsSendMenuOpen(false); handleSubmitForReview("HOD"); }}
+                    className="w-full flex items-start gap-2.5 px-3 py-2.5 rounded-lg hover:bg-indigo-50 text-left cursor-pointer transition-colors"
+                  >
+                    <Building2 className="h-4 w-4 mt-0.5 text-indigo-600 shrink-0" />
+                    <span>
+                      <span className="block text-xs font-bold text-neutral-800">Send to HOD</span>
+                      <span className="block text-[10px] text-neutral-500 mt-0.5">
+                        The Head of Department receives the submission for review.
+                      </span>
+                    </span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        {variant === "ledger" && (
+          <button
+            onClick={handleExportPdf}
+            disabled={students.length === 0}
+            title="Print the grouped CA register to PDF"
+            className="flex items-center gap-2 h-10 px-5 text-xs font-bold bg-white border border-neutral-200 text-neutral-700 rounded-xl hover:bg-neutral-50 disabled:opacity-40 transition-all cursor-pointer"
+          >
+            <Printer className="h-3.5 w-3.5" />Export CA PDF
+          </button>
+        )}
+        {isSecondChecking && (
+          <button
+            onClick={handleRecallSubmission}
+            disabled={isSubmitting}
+            className="flex items-center gap-2 h-10 px-5 text-xs font-bold bg-white border border-indigo-200 text-indigo-700 rounded-xl hover:bg-indigo-50 disabled:opacity-40 transition-all cursor-pointer"
+          >
+            {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
+            Recall Submission
+          </button>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="w-full min-h-screen bg-cream-canvas text-[#1a1a1a]">
@@ -1799,6 +1913,7 @@ export default function LecturerConsolePage() {
                 {([
                   { id: "blueprint" as MainTab, label: "Blueprint Setup", icon: <Settings className="h-3.5 w-3.5" /> },
                   { id: "marks" as MainTab, label: "Marks Ledger", icon: <ClipboardList className="h-3.5 w-3.5" />, badge: students.length },
+                  { id: "marksheet" as MainTab, label: "Marksheet", icon: <Table2 className="h-3.5 w-3.5" /> },
                 ] as const).map(tab => (
                   <button
                     key={tab.id}
@@ -1848,9 +1963,7 @@ export default function LecturerConsolePage() {
                       <div className="space-y-4">
                         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-xs">
                           <div className="flex-1 font-semibold text-teal-900">
-                            <span className="font-black">Authorised cohort:</span> {activeModule?.eligibleStudents ?? 0} students
-                            <span className="mx-1.5 text-teal-500">·</span>
-                            <span className="text-teal-800">{students.length} on the roster</span>
+                            <span className="font-black">Eligibility:</span> {activeModule?.eligibleStudents ?? 0} students
                           </div>
                           {isEditingCohort ? (
                             <div className="flex flex-wrap items-center gap-2">
@@ -2304,12 +2417,6 @@ export default function LecturerConsolePage() {
                           )}
                         </div>
 
-                        <button
-                          onClick={() => setIsSummaryOpen(open => !open)}
-                          className={`flex items-center gap-1.5 h-8 px-3 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${isSummaryOpen ? "bg-indigo-600 text-white border-indigo-600" : "bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50"}`}
-                        >
-                          <Table2 className="h-3.5 w-3.5" />Summary
-                        </button>
 
                         <button
                           onClick={handleExportCsv}
@@ -2429,19 +2536,6 @@ export default function LecturerConsolePage() {
                     </div>
                   )}
 
-                  {/* Summary panel */}
-                  {isSummaryOpen && (
-                    <div className="p-4 sm:p-5 pb-0">
-                      <MarksheetSummary
-                        rows={summaryRows}
-                        moduleName={activeModule.name}
-                        showComparison={showComparison}
-                        onExport={handleExportCsv}
-                        onClose={() => setIsSummaryOpen(false)}
-                        excludedCount={ineligibleCount}
-                      />
-                    </div>
-                  )}
 
                   <div className="p-5">
                     {/* ── CA Marks Grid ─────────────────────────────────────── */}
@@ -2935,102 +3029,7 @@ export default function LecturerConsolePage() {
                       </div>
                     )}
 
-                    {/* Ledger action bar */}
-                    {!isReadOnly && students.length > 0 && (
-                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-5 border-t border-neutral-100 mt-5">
-                        <div className="text-[11px] text-neutral-400 max-w-md">
-          <strong>Save Marks</strong> stores your ledger.
-          {isSecondChecking
-            ? " The marksheet is with the Examiner — recall it before making corrections."
-            : " When every eligible row is complete, use "}
-          {!isSecondChecking && <strong>Send to…</strong>}
-          {!isSecondChecking && " to submit it to Faculty or the HOD."}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={() => saveMarks()}
-                            disabled={isSaving || (!isDirty && removedIndexes.length === 0)}
-                            title={!isDirty && removedIndexes.length === 0 ? "Everything is already saved" : ""}
-                            className="flex items-center gap-2 h-10 px-5 text-xs font-bold bg-[#1a1a1a] text-white rounded-xl hover:bg-neutral-800 disabled:opacity-40 transition-all cursor-pointer"
-                          >
-                            {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                            Save Marks
-                          </button>
-                          {!isSecondChecking && (
-                            <div className="relative">
-                              <button
-                                onClick={() => setIsSendMenuOpen(open => !open)}
-                                disabled={isSubmitting || isSaving}
-                                title={
-                                  errorCount > 0
-                                    ? `${errorCount} issue(s) must be fixed before sending`
-                                    : "Choose who receives this submission"
-                                }
-                                className="flex items-center gap-2 h-10 px-5 text-xs font-bold bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-40 transition-all cursor-pointer"
-                              >
-                                {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                                Send to…
-                                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isSendMenuOpen ? "rotate-180" : ""}`} />
-                              </button>
-
-                              {isSendMenuOpen && (
-                                <>
-                                  <div className="fixed inset-0 z-20" onClick={() => setIsSendMenuOpen(false)} aria-hidden="true" />
-                                  <div className="absolute right-0 bottom-full mb-2 w-80 bg-white border border-neutral-200 rounded-xl shadow-xl z-30 p-1.5 space-y-1">
-                                    <p className="px-3 pt-1.5 pb-1 text-[9px] font-black uppercase tracking-wider text-neutral-400">
-                                      Submit this marksheet to
-                                    </p>
-                                    <button
-                                      onClick={() => { setIsSendMenuOpen(false); handleSubmitForReview("FACULTY"); }}
-                                      className="w-full flex items-start gap-2.5 px-3 py-2.5 rounded-lg hover:bg-indigo-50 text-left cursor-pointer transition-colors"
-                                    >
-                                      <GraduationCap className="h-4 w-4 mt-0.5 text-indigo-600 shrink-0" />
-                                      <span>
-                                        <span className="block text-xs font-bold text-neutral-800">Send to Faculty</span>
-                                        <span className="block text-[10px] text-neutral-500 mt-0.5">
-                                          The Second Examiner independently marks the final paper.
-                                        </span>
-                                      </span>
-                                    </button>
-                                    <button
-                                      onClick={() => { setIsSendMenuOpen(false); handleSubmitForReview("HOD"); }}
-                                      className="w-full flex items-start gap-2.5 px-3 py-2.5 rounded-lg hover:bg-indigo-50 text-left cursor-pointer transition-colors"
-                                    >
-                                      <Building2 className="h-4 w-4 mt-0.5 text-indigo-600 shrink-0" />
-                                      <span>
-                                        <span className="block text-xs font-bold text-neutral-800">Send to HOD</span>
-                                        <span className="block text-[10px] text-neutral-500 mt-0.5">
-                                          The Head of Department receives the submission for review.
-                                        </span>
-                                      </span>
-                                    </button>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          )}
-                          <button
-                            onClick={handleExportPdf}
-                            disabled={students.length === 0}
-                            title="Print the grouped CA register to PDF"
-                            className="flex items-center gap-2 h-10 px-5 text-xs font-bold bg-white border border-neutral-200 text-neutral-700 rounded-xl hover:bg-neutral-50 disabled:opacity-40 transition-all cursor-pointer"
-                          >
-                            <Printer className="h-3.5 w-3.5" />Export PDF
-                          </button>
-                          {isSecondChecking && (
-                            <button
-                              onClick={handleRecallSubmission}
-                              disabled={isSubmitting}
-                              className="flex items-center gap-2 h-10 px-5 text-xs font-bold bg-white border border-indigo-200 text-indigo-700 rounded-xl hover:bg-indigo-50 disabled:opacity-40 transition-all cursor-pointer"
-                            >
-                              {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
-                              Recall Submission
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
+                    {!isReadOnly && students.length > 0 && renderSubmitBar("ledger")}
                     {isReadOnly && students.length > 0 && (
                       <div className="flex items-center gap-2 pt-5 border-t border-neutral-100 mt-5 text-[11px] font-semibold text-neutral-500">
                         <ArrowDownToLine className="h-3.5 w-3.5" />
@@ -3042,6 +3041,61 @@ export default function LecturerConsolePage() {
                           <Download className="h-3.5 w-3.5" />Export CSV
                         </button>
                       </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ══════════════════════════════════════════════════════════════════
+                  PANEL D — MARKSHEET REPORT
+              ══════════════════════════════════════════════════════════════════ */}
+              {mainTab === "marksheet" && (
+                <div className="bg-white rounded-2xl premium-border overflow-hidden">
+                  <div className="border-b border-neutral-200 bg-neutral-50/60 px-5 py-3 flex flex-wrap items-center gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Marksheet report</p>
+                      <h2 className="text-sm font-black text-neutral-900">{activeModule.code} · {activeModule.name}</h2>
+                    </div>
+                    <div className="ml-auto flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={handleExportCsv}
+                        disabled={students.length === 0}
+                        className="flex items-center gap-1.5 h-8 px-3 text-xs font-bold bg-white border border-neutral-200 text-neutral-700 rounded-lg hover:bg-neutral-50 disabled:opacity-40 transition-colors cursor-pointer"
+                      >
+                        <Download className="h-3.5 w-3.5" />CSV
+                      </button>
+                      <button
+                        onClick={handleExportMarksheetPdf}
+                        disabled={students.length === 0}
+                        title="Open the full marksheet, then choose Save as PDF in the print dialog"
+                        className="flex items-center gap-1.5 h-8 px-3 text-xs font-bold bg-[#1a1a1a] text-white rounded-lg hover:bg-neutral-800 disabled:opacity-40 transition-colors cursor-pointer"
+                      >
+                        <Printer className="h-3.5 w-3.5" />Full marksheet PDF
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="p-5 space-y-5">
+                    {students.length === 0 ? (
+                      <p className="text-sm text-neutral-400 italic text-center py-8">No students on this marksheet yet. Add them on the Marks Ledger.</p>
+                    ) : (
+                      <MarksheetSummary
+                        rows={summaryRows}
+                        moduleName={activeModule.name}
+                        showComparison={showComparison}
+                        excludedCount={ineligibleCount}
+                      />
+                    )}
+                    {searchTerm && (
+                      <p className="text-[11px] text-amber-700">The report and CSV are filtered by the search “{searchTerm}”. Clear it on the Marks Ledger to include everyone.</p>
+                    )}
+                    {students.length > 0 && (
+                      isReadOnly ? (
+                        <div className="flex items-center gap-2 text-[11px] font-semibold text-neutral-500">
+                          <ArrowDownToLine className="h-3.5 w-3.5" />
+                          Read-only view. Use CSV or the full marksheet PDF for a copy.
+                        </div>
+                      ) : renderSubmitBar("marksheet")
                     )}
                   </div>
                 </div>
