@@ -83,6 +83,7 @@ export async function GET(request: Request) {
         code: m.code,
         name: m.name,
         credits: m.credits,
+        eligibleStudents: m.eligibleStudents,
         isFrozen: m.isFrozen,
         stats: {
           ...stats,
@@ -119,6 +120,9 @@ export async function GET(request: Request) {
  * Mode B — blueprint save: { moduleCode, caComponents, finalBlueprint }
  *   • Structural validation, 100% weight rule, frozen + closed-marksheet locks,
  *     auto-generates examTemplate from the final blueprint.
+ *
+ * Mode C — authorised cohort size: { moduleCode, eligibleStudents }
+ *   • Updates the HOD-authorised cohort count with the same frozen/closed locks.
  */
 export async function PATCH(request: Request) {
   try {
@@ -127,6 +131,7 @@ export async function PATCH(request: Request) {
       marksheetStatus?: unknown;
       caComponents?: unknown;
       finalBlueprint?: unknown;
+      eligibleStudents?: unknown;
       submittedTo?: unknown;
     } | null;
 
@@ -252,6 +257,40 @@ export async function PATCH(request: Request) {
       });
 
       return NextResponse.json({ success: true, marksheetStatus: target, stats: updated.stats });
+    }
+
+    // ── Mode C: update the authorised cohort size ────────────────────────────
+    if (body.eligibleStudents !== undefined) {
+      const eligibleStudents = body.eligibleStudents;
+      if (typeof eligibleStudents !== "number" || !Number.isSafeInteger(eligibleStudents) || eligibleStudents < 0) {
+        return NextResponse.json(
+          { error: "eligibleStudents must be a non-negative whole number." },
+          { status: 400 }
+        );
+      }
+
+      if (existing.isFrozen) {
+        return NextResponse.json(
+          { error: "The authorised cohort is locked or frozen by the HOD." },
+          { status: 403 }
+        );
+      }
+      if (isLecturerLocked(currentStatus)) {
+        return NextResponse.json(
+          {
+            error: `The authorised cohort cannot be changed once the marksheet is ${currentStatus}.`,
+            marksheetStatus: currentStatus,
+          },
+          { status: 409 }
+        );
+      }
+
+      const updated = await prisma.module.update({
+        where: { code: moduleCode },
+        data: { eligibleStudents },
+        select: { eligibleStudents: true },
+      });
+      return NextResponse.json({ success: true, eligibleStudents: updated.eligibleStudents });
     }
 
     // ── Mode B: full blueprint save ──────────────────────────────────────────

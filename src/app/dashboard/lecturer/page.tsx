@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
@@ -11,6 +11,13 @@ import { ComponentMarksDialog } from "@/components/lecturer/ComponentMarksDialog
 import { FinalSectionMarksDialog } from "@/components/lecturer/FinalSectionMarksDialog";
 import { openCaGridPrintWindow } from "@/lib/ca-print";
 import {
+  downloadMarksTemplate,
+  emptyMarksExcelRow,
+  parseMarksExcelFiles,
+  type MarksExcelKind,
+  type MarksExcelPatch,
+} from "@/lib/marks-excel";
+import {
   BookOpen, Plus, Trash2, Save, Loader2, AlertCircle, CheckCircle2,
   Lock, Sliders, UserPlus, FileText,
   ChevronDown, Key, Flame, Shield, ClipboardList,
@@ -18,6 +25,7 @@ import {
   User, LogOut, Search, Download, ClipboardPaste, RotateCcw, Undo2,
   TriangleAlert, Info, Table2, X, Send, ArrowDownToLine,
   Pencil, Check, Printer, Eye, GraduationCap, Building2,
+  FileSpreadsheet, Upload,
 } from "lucide-react";
 import type {
   CaComponent,
@@ -164,6 +172,8 @@ export default function LecturerConsolePage() {
   /** Indexes present in the database for this module (deletions must persist). */
   const [persistedIndexes, setPersistedIndexes] = useState<string[]>([]);
   const [removedIndexes, setRemovedIndexes] = useState<string[]>([]);
+  /** Persisted rows hidden by a pending removal, available if restored/imported. */
+  const [removedRows, setRemovedRows] = useState<Record<string, StudentMarkRecord>>({});
   const [newIndexInput, setNewIndexInput] = useState("");
   const [isDirty, setIsDirty] = useState(false);
 
@@ -181,6 +191,13 @@ export default function LecturerConsolePage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [isBulkOpen, setIsBulkOpen] = useState(false);
   const [bulkText, setBulkText] = useState("");
+  const [isImportingExcel, setIsImportingExcel] = useState(false);
+  const [cohortInput, setCohortInput] = useState("");
+  const [isEditingCohort, setIsEditingCohort] = useState(false);
+  const [isSavingCohort, setIsSavingCohort] = useState(false);
+  const activeModuleCodeRef = useRef<string | null>(null);
+  const moduleSelectionVersionRef = useRef(0);
+  const excelImportInputRef = useRef<HTMLInputElement>(null);
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
   const [isIssuesOpen, setIsIssuesOpen] = useState(false);
   /** Rows unlocked by the Action-column edit button; their component dialogs open in edit mode. */
@@ -210,15 +227,21 @@ export default function LecturerConsolePage() {
   const isReconciliationNeeded = activeStatus === "RECONCILIATION_NEEDED";
 
   const selectModule = useCallback(async (mod: DepartmentModule) => {
+    activeModuleCodeRef.current = mod.code;
+    moduleSelectionVersionRef.current += 1;
     setActiveModule(mod);
     setFeedback(null);
     setStudents([]);
     setPersistedIndexes([]);
     setRemovedIndexes([]);
+    setRemovedRows({});
     setIsDirty(false);
     setSearchTerm("");
     setIsBulkOpen(false);
     setBulkText("");
+    setIsImportingExcel(false);
+    setCohortInput(String(mod.eligibleStudents ?? 0));
+    setIsEditingCohort(false);
     setIsSummaryOpen(false);
     setIsIssuesOpen(false);
     setEditingRows(new Set());
@@ -243,6 +266,59 @@ export default function LecturerConsolePage() {
       }
     } catch {}
   }, []);
+
+  const cancelCohortEdit = () => {
+    setCohortInput(String(activeModule?.eligibleStudents ?? 0));
+    setIsEditingCohort(false);
+  };
+
+  const saveAuthorizedCohort = async () => {
+    if (!activeModule || isSavingCohort) return;
+    const moduleCode = activeModule.code;
+    const rawValue = cohortInput.trim();
+    const eligibleStudents = Number(rawValue);
+    if (!rawValue || !Number.isSafeInteger(eligibleStudents) || eligibleStudents < 0) {
+      setFeedback({ type: "error", text: "Authorised cohort must be a non-negative whole number." });
+      return;
+    }
+
+    setIsSavingCohort(true);
+    setFeedback(null);
+    try {
+      const response = await fetch("/api/lecturer/modules", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ moduleCode, eligibleStudents }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        if (activeModuleCodeRef.current === moduleCode) {
+          setFeedback({ type: "error", text: result.error ?? "Failed to update the authorised cohort." });
+        }
+        return;
+      }
+
+      const nextCount = Number(result.eligibleStudents ?? eligibleStudents);
+      setModules(previous => previous.map(module => module.code === moduleCode
+        ? { ...module, eligibleStudents: nextCount }
+        : module
+      ));
+      if (activeModuleCodeRef.current === moduleCode) {
+        setActiveModule(previous => previous?.code === moduleCode
+          ? { ...previous, eligibleStudents: nextCount }
+          : previous
+        );
+        setIsEditingCohort(false);
+        setFeedback({ type: "success", text: `Authorised cohort updated to ${nextCount} students.` });
+      }
+    } catch {
+      if (activeModuleCodeRef.current === moduleCode) {
+        setFeedback({ type: "error", text: "Network error. Please try again." });
+      }
+    } finally {
+      setIsSavingCohort(false);
+    }
+  };
 
   // ── Auth-guarded module fetch ───────────────────────────────────────────────
   useEffect(() => {
@@ -551,7 +627,9 @@ export default function LecturerConsolePage() {
       );
       const questionsToAnswer = count === 0
         ? 0
-        : Math.max(1, Math.min(count, section.questionsToAnswer || count));
+        : sectionKey === "mcq"
+          ? count
+          : Math.max(1, Math.min(count, section.questionsToAnswer || count));
       return { ...section, questions, questionsToAnswer };
     });
   };
@@ -573,7 +651,9 @@ export default function LecturerConsolePage() {
         ...section,
         questionsToAnswer: count === 0
           ? 0
-          : Math.max(1, Math.min(count, Math.floor(Number(raw) || 1))),
+          : sectionKey === "mcq"
+            ? count
+            : Math.max(1, Math.min(count, Math.floor(Number(raw) || 1))),
       };
     });
   };
@@ -640,7 +720,14 @@ export default function LecturerConsolePage() {
     }
     if (removedIndexes.includes(idx)) {
       // Restoring a pending removal is cheaper than re-creating the row.
+      const restored = removedRows[idx] ?? emptyMarksExcelRow(activeModule?.code ?? "", idx);
+      mutateStudents(prev => prev.some(row => row.studentIndex === idx) ? prev : [...prev, restored]);
       setRemovedIndexes(prev => prev.filter(item => item !== idx));
+      setRemovedRows(prev => {
+        const next = { ...prev };
+        delete next[idx];
+        return next;
+      });
       setNewIndexInput("");
       setFeedback({ type: "info", text: `${idx} restored to the marksheet.` });
       return;
@@ -679,11 +766,17 @@ export default function LecturerConsolePage() {
     const added: StudentMarkRecord[] = [];
     const rejected: string[] = [];
     const duplicates: string[] = [];
+    let restoredCount = 0;
 
     for (const token of tokens) {
       if (!INDEX_PATTERN.test(token)) { rejected.push(token); continue; }
       if (existing.has(token)) { duplicates.push(token); continue; }
       existing.add(token);
+      if (removedIndexes.includes(token)) {
+        added.push(removedRows[token] ?? emptyMarksExcelRow(activeModule?.code ?? "", token));
+        restoredCount++;
+        continue;
+      }
       added.push({
         id: 0, moduleCode: activeModule?.code ?? "",
         studentIndex: token,
@@ -696,13 +789,17 @@ export default function LecturerConsolePage() {
 
     if (added.length > 0) {
       // Restored indexes should no longer be pending deletion.
-      setRemovedIndexes(prev => prev.filter(index => !added.some(row => row.studentIndex === index)));
+      const addedIndexes = new Set(added.map(row => row.studentIndex));
+      setRemovedIndexes(prev => prev.filter(index => !addedIndexes.has(index)));
+      setRemovedRows(prev => Object.fromEntries(Object.entries(prev).filter(([index]) => !addedIndexes.has(index))));
       mutateStudents(prev => [...prev, ...added]);
       setBulkText("");
       setIsBulkOpen(false);
     }
 
-    const parts = [`${added.length} student(s) added.`];
+    const newlyAdded = added.length - restoredCount;
+    const parts = [`${newlyAdded} new student(s) added.`];
+    if (restoredCount > 0) parts.push(`${restoredCount} pending removal(s) restored.`);
     if (duplicates.length > 0) parts.push(`${duplicates.length} already on the marksheet.`);
     if (rejected.length > 0) parts.push(`${rejected.length} skipped (invalid format): ${rejected.slice(0, 3).join(", ")}${rejected.length > 3 ? "…" : ""}`);
 
@@ -717,7 +814,10 @@ export default function LecturerConsolePage() {
 
     const doRemove = () => {
       mutateStudents(prev => prev.filter(item => item.studentIndex !== row.studentIndex));
-      if (isPersisted) setRemovedIndexes(prev => (prev.includes(row.studentIndex) ? prev : [...prev, row.studentIndex]));
+      if (isPersisted) {
+        setRemovedRows(previous => ({ ...previous, [row.studentIndex]: row }));
+        setRemovedIndexes(prev => (prev.includes(row.studentIndex) ? prev : [...prev, row.studentIndex]));
+      }
       setFeedback(null);
     };
 
@@ -745,7 +845,14 @@ export default function LecturerConsolePage() {
   };
 
   const restoreIndex = (index: string) => {
+    const restored = removedRows[index];
+    if (restored) mutateStudents(prev => prev.some(row => row.studentIndex === index) ? prev : [...prev, restored]);
     setRemovedIndexes(prev => prev.filter(item => item !== index));
+    setRemovedRows(prev => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
     setFeedback({ type: "info", text: `${index} will be kept — save to confirm.` });
   };
 
@@ -866,8 +973,22 @@ export default function LecturerConsolePage() {
         setActiveModule(prev => prev ? { ...prev, stats: result.stats } : null);
       }
 
-      setPersistedIndexes(students.map(row => row.studentIndex));
+      const skippedDeletions: string[] = Array.isArray(result.skippedDeletions)
+        ? result.skippedDeletions.filter((value: unknown): value is string => typeof value === "string")
+        : [];
+      const skippedRows: StudentMarkRecord[] = skippedDeletions
+        .map((index: string) => removedRows[index])
+        .filter((row: StudentMarkRecord | undefined): row is StudentMarkRecord => !!row);
+      if (skippedRows.length > 0) {
+        setStudents(previous => {
+          const byIndex = new Map(previous.map(row => [row.studentIndex, row]));
+          skippedRows.forEach(row => byIndex.set(row.studentIndex, row));
+          return Array.from(byIndex.values());
+        });
+      }
+      setPersistedIndexes(Array.from(new Set([...students.map(row => row.studentIndex), ...skippedDeletions])));
       setRemovedIndexes([]);
+      setRemovedRows({});
       setIsDirty(false);
 
       const notes: string[] = [];
@@ -876,13 +997,11 @@ export default function LecturerConsolePage() {
       if (result.deleted) notes.push(`${result.deleted} deleted`);
       if (result.rejectedRows) notes.push(`${result.rejectedRows} rejected`);
 
-      if (Array.isArray(result.skippedDeletions) && result.skippedDeletions.length > 0) {
+      if (skippedDeletions.length > 0) {
         setFeedback({
           type: "info",
-          text: `Marks saved (${notes.join(", ") || "no changes"}). ${result.skippedDeletions.join(", ")} could not be removed because the Second Examiner has already marked them.`,
+          text: `Marks saved (${notes.join(", ") || "no changes"}). ${skippedDeletions.join(", ")} could not be removed because the Second Examiner has already marked them; they were restored to the roster.`,
         });
-        // Keep them visible so the lecturer knows they still exist.
-        setRemovedIndexes([]);
       } else {
         setFeedback({ type: "success", text: `Marks saved (${notes.join(", ") || "no changes"}).` });
       }
@@ -893,7 +1012,7 @@ export default function LecturerConsolePage() {
     } finally {
       setIsSaving(false);
     }
-  }, [activeModule, students, removedIndexes]);
+  }, [activeModule, students, removedIndexes, removedRows]);
 
   /**
    * The bottom "Send to…" menu addresses one and the same submission — the
@@ -1071,8 +1190,109 @@ export default function LecturerConsolePage() {
     setFeedback({ type: "info", text: `${eligible} eligible row(s) exported to CSV.` });
   };
 
+  const handleDownloadExcelTemplate = async (kind: MarksExcelKind) => {
+    if (!activeModule) return;
+    try {
+      await downloadMarksTemplate({
+        kind,
+        moduleCode: activeModule.code,
+        caComponents,
+        finalBlueprint,
+        students,
+      });
+      setFeedback({
+        type: "info",
+        text: `${kind === "CA" ? "CA" : "Final Paper"} Excel template downloaded. Fill mark cells and import it from the Marks Ledger.`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not create the Excel template.";
+      setFeedback({ type: "error", text: message });
+    }
+  };
+
+  const mergeExcelPatch = (row: StudentMarkRecord, patch: MarksExcelPatch): StudentMarkRecord => {
+    const caQuestionsMarks = { ...row.caQuestionsMarks };
+    for (const [componentId, marks] of Object.entries(patch.caQuestionsMarks ?? {})) {
+      caQuestionsMarks[componentId] = { ...(caQuestionsMarks[componentId] ?? {}), ...marks };
+    }
+
+    const currentFinalMarks = normaliseFinalMarks(row.finalExamQuestionsMarks, finalBlueprint);
+    const sparseFinalMarks = patch.finalExamQuestionsMarks;
+    const finalExamQuestionsMarks: FinalPaperMarks = sparseFinalMarks ? {
+      theory: {
+        mcq: { ...currentFinalMarks.theory.mcq, ...sparseFinalMarks.theory?.mcq },
+        essay: { ...currentFinalMarks.theory.essay, ...sparseFinalMarks.theory?.essay },
+      },
+      practical: { ...currentFinalMarks.practical, ...sparseFinalMarks.practical },
+    } : currentFinalMarks;
+
+    const isAbsentTheory = patch.isAbsentTheory ?? row.isAbsentTheory;
+    const isAbsentPractical = patch.isAbsentPractical ?? row.isAbsentPractical;
+    return {
+      ...row,
+      caQuestionsMarks,
+      isAbsentCa: { ...row.isAbsentCa, ...patch.isAbsentCa },
+      finalExamQuestionsMarks,
+      isAbsentTheory,
+      isAbsentPractical,
+      isAbsentFinal: isAbsentTheory && isAbsentPractical,
+    };
+  };
+
+  const handleExcelImport = async (fileList: FileList | null) => {
+    if (!activeModule || !fileList || fileList.length === 0) return;
+    const moduleCode = activeModule.code;
+    const selectionVersion = moduleSelectionVersionRef.current;
+    setIsImportingExcel(true);
+    setFeedback(null);
+    try {
+      const result = await parseMarksExcelFiles(Array.from(fileList), caComponents, finalBlueprint);
+      if (moduleSelectionVersionRef.current !== selectionVersion) return;
+      const touchedIndexes = new Set(result.updates.map(update => update.studentIndex));
+      if (result.updates.length > 0) {
+        mutateStudents(previous => {
+          const byIndex = new Map(previous.map(row => [row.studentIndex, row]));
+          for (const update of result.updates) {
+            const existingRow = byIndex.get(update.studentIndex)
+              ?? removedRows[update.studentIndex]
+              ?? emptyMarksExcelRow(moduleCode, update.studentIndex);
+            byIndex.set(update.studentIndex, mergeExcelPatch(existingRow, update.patch));
+          }
+          return Array.from(byIndex.values());
+        });
+        setRemovedIndexes(previous => previous.filter(index => !touchedIndexes.has(index)));
+        setRemovedRows(previous => Object.fromEntries(
+          Object.entries(previous).filter(([index]) => !touchedIndexes.has(index))
+        ));
+      }
+
+      const uniqueIndexes = new Set(result.updates.map(update => update.studentIndex));
+      const rosterIndexes = new Set(students.map(row => row.studentIndex));
+      const addedCount = Array.from(uniqueIndexes).filter(index => !rosterIndexes.has(index) && !removedIndexes.includes(index)).length;
+      const restoredCount = Array.from(uniqueIndexes).filter(index => removedIndexes.includes(index)).length;
+      const summary = result.updates.length === 0
+        ? "No importable student rows were found."
+        : `${uniqueIndexes.size} student row(s) imported (${addedCount} new${restoredCount ? `, ${restoredCount} pending removal(s) restored` : ""}${result.duplicateRowsMerged ? `, ${result.duplicateRowsMerged} duplicate row(s) merged` : ""}). Changes are unsaved; press Save Marks to persist.`;
+      const warningSummary = result.warnings.length > 0
+        ? ` ${result.warnings.slice(0, 2).join(" ")}${result.warnings.length > 2 ? ` And ${result.warnings.length - 2} more warning(s).` : ""}`
+        : "";
+      setFeedback({
+        type: result.warnings.length > 0 ? "info" : "success",
+        text: `${summary}${warningSummary}`,
+      });
+      setIsBulkOpen(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not import this file.";
+      setFeedback({ type: "error", text: message });
+    } finally {
+      setIsImportingExcel(false);
+      if (excelImportInputRef.current) excelImportInputRef.current.value = "";
+    }
+  };
+
   const renderFinalSectionEditor = (setup: typeof FINAL_SECTION_SETUP[number]) => {
     const section = getFinalSectionBlueprint(finalBlueprint, setup.key);
+    const isMcq = setup.key === "mcq";
     const tone = setup.tone === "sky"
       ? "border-sky-200 bg-sky-50/50 text-sky-800"
       : setup.tone === "violet"
@@ -1089,7 +1309,7 @@ export default function LecturerConsolePage() {
             Required max {finalSectionMaxScore(section)} · {finalSectionWeightage(finalBlueprint, setup.key).toFixed(1)}% of module mark
           </span>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className={`grid gap-3 ${isMcq ? "grid-cols-1" : "grid-cols-2"}`}>
           <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-600">
             Questions configured
             <input
@@ -1101,18 +1321,20 @@ export default function LecturerConsolePage() {
               className="mt-1 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs font-bold text-neutral-800 focus:border-emerald-500 focus:outline-none"
             />
           </label>
-          <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-600">
-            Required answers
-            <input
-              type="number"
-              min={section.questions.length > 0 ? 1 : 0}
-              max={section.questions.length || 0}
-              disabled={section.questions.length === 0}
-              value={section.questionsToAnswer}
-              onChange={event => updateFinalRequiredCount(setup.key, event.target.value)}
-              className="mt-1 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs font-bold text-neutral-800 focus:border-emerald-500 focus:outline-none disabled:bg-neutral-100 disabled:text-neutral-400"
-            />
-          </label>
+          {!isMcq && (
+            <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-600">
+              Required answers
+              <input
+                type="number"
+                min={section.questions.length > 0 ? 1 : 0}
+                max={section.questions.length || 0}
+                disabled={section.questions.length === 0}
+                value={section.questionsToAnswer}
+                onChange={event => updateFinalRequiredCount(setup.key, event.target.value)}
+                className="mt-1 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs font-bold text-neutral-800 focus:border-emerald-500 focus:outline-none disabled:bg-neutral-100 disabled:text-neutral-400"
+              />
+            </label>
+          )}
         </div>
         {section.questions.length > 0 ? (
           <div className="overflow-hidden rounded-xl border border-white/80 bg-white">
@@ -1121,35 +1343,29 @@ export default function LecturerConsolePage() {
                 Maximum per question
               </span>
               <span className="text-[10px] text-neutral-400">
-                {section.questions.length} question{section.questions.length === 1 ? "" : "s"} · answer {section.questionsToAnswer}
+                {isMcq
+                  ? `${section.questions.length} question${section.questions.length === 1 ? "" : "s"} · all compulsory`
+                  : `${section.questions.length} question${section.questions.length === 1 ? "" : "s"} · answer ${section.questionsToAnswer}`}
               </span>
             </div>
             <div className="divide-y divide-neutral-100 max-h-72 overflow-y-auto">
-              {section.questions.map((question, index) => {
-                const isRequired = index < section.questionsToAnswer;
-                return (
-                  <div key={`${question.id}-${index}`} className="grid grid-cols-[minmax(0,1fr)_6.5rem] items-center gap-3 px-3 py-1.5">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="w-10 shrink-0 text-[11px] font-black text-neutral-600">{question.id}</span>
-                      {isRequired ? (
-                        <span className="rounded border border-emerald-100 bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-700">Required</span>
-                      ) : (
-                        <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-neutral-500">Optional</span>
-                      )}
-                    </div>
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={question.maxMarks || ""}
-                      aria-label={`${setup.label} ${question.id} maximum marks`}
-                      onChange={event => updateFinalQuestionMax(setup.key, index, event.target.value)}
-                      placeholder="10"
-                      className="w-full rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-right text-xs font-black text-neutral-800 focus:border-emerald-500 focus:outline-none"
-                    />
+              {section.questions.map((question, index) => (
+                <div key={`${question.id}-${index}`} className="grid grid-cols-[minmax(0,1fr)_6.5rem] items-center gap-3 px-3 py-1.5">
+                  <div className="flex min-w-0 items-center">
+                    <span className="w-10 shrink-0 text-[11px] font-black text-neutral-600">{question.id}</span>
                   </div>
-                );
-              })}
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={question.maxMarks || ""}
+                    aria-label={`${setup.label} ${question.id} maximum marks`}
+                    onChange={event => updateFinalQuestionMax(setup.key, index, event.target.value)}
+                    placeholder="10"
+                    className="w-full rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-right text-xs font-black text-neutral-800 focus:border-emerald-500 focus:outline-none"
+                  />
+                </div>
+              ))}
             </div>
           </div>
         ) : (
@@ -1231,6 +1447,8 @@ export default function LecturerConsolePage() {
   const finalSections = finalBlueprint.enabled
     ? getFinalPaperSections(finalBlueprint).filter(section => section.blueprint.questions.length > 0)
     : [];
+  const theoryFinalSections = finalSections.filter(section => section.parent === "theory");
+  const practicalFinalSections = finalSections.filter(section => section.parent === "practical");
   const pendingReconciliationCount = modules.filter(
     m => statsOf(m).marksheetStatus === "RECONCILIATION_NEEDED" && !statsOf(m).lecturerApproved
   ).length;
@@ -1628,6 +1846,64 @@ export default function LecturerConsolePage() {
                     {/* ── CA Setup Tab ─────────────────────────────────────── */}
                     {bpTab === "ca" && (
                       <div className="space-y-4">
+                        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-teal-200 bg-teal-50/80 px-4 py-3 text-xs">
+                          <div className="flex-1 font-semibold text-teal-900">
+                            <span className="font-black">Authorised cohort:</span> {activeModule?.eligibleStudents ?? 0} students
+                            <span className="mx-1.5 text-teal-500">·</span>
+                            <span className="text-teal-800">{students.length} on the roster</span>
+                          </div>
+                          {isEditingCohort ? (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                value={cohortInput}
+                                autoFocus
+                                aria-label="Authorised cohort size"
+                                onChange={event => setCohortInput(event.target.value)}
+                                onKeyDown={event => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    void saveAuthorizedCohort();
+                                  } else if (event.key === "Escape") {
+                                    cancelCohortEdit();
+                                  }
+                                }}
+                                className="h-8 w-28 rounded-lg border border-teal-300 bg-white px-2.5 text-right text-xs font-bold text-neutral-800 focus:border-teal-600 focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => void saveAuthorizedCohort()}
+                                disabled={isSavingCohort}
+                                className="inline-flex h-8 items-center gap-1 rounded-lg bg-teal-700 px-3 text-xs font-bold text-white hover:bg-teal-800 disabled:opacity-50 cursor-pointer"
+                              >
+                                {isSavingCohort ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={cancelCohortEdit}
+                                disabled={isSavingCohort}
+                                className="inline-flex h-8 items-center gap-1 rounded-lg border border-teal-200 bg-white px-3 text-xs font-bold text-teal-800 hover:bg-teal-100 disabled:opacity-50 cursor-pointer"
+                              >
+                                <X className="h-3.5 w-3.5" />Cancel
+                              </button>
+                              <span className="text-[10px] font-medium text-teal-700">Enter to save · Esc to cancel</span>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCohortInput(String(activeModule?.eligibleStudents ?? 0));
+                                setIsEditingCohort(true);
+                              }}
+                              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-3 text-xs font-bold text-teal-800 hover:bg-teal-100 cursor-pointer"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />Edit
+                            </button>
+                          )}
+                        </div>
                         <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
                           <div>
                             <h3 className="font-bold text-sm">Continuous Assessment Components</h3>
@@ -1638,6 +1914,13 @@ export default function LecturerConsolePage() {
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => void handleDownloadExcelTemplate("CA")}
+                              className="flex items-center gap-1.5 h-8 px-3 text-xs font-bold bg-white text-neutral-700 border border-neutral-200 rounded-lg hover:bg-neutral-50 transition-colors cursor-pointer"
+                            >
+                              <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-700" />Excel template
+                            </button>
                             <button
                               onClick={() => addCA("A")}
                               className="flex items-center gap-1.5 h-8 px-3 text-xs font-bold bg-violet-50 text-violet-700 border border-violet-100 rounded-lg hover:bg-violet-100 transition-colors cursor-pointer"
@@ -1860,24 +2143,35 @@ export default function LecturerConsolePage() {
                             <h3 className="font-bold text-sm">Final Paper Blueprint</h3>
                             <p className="text-xs text-neutral-500 mt-0.5">Theory contains MCQ and Essay. Practical is a separate parent section.</p>
                           </div>
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <span className="text-xs font-bold text-neutral-700">Final paper enabled</span>
-                            <div
-                              role="switch"
-                              aria-checked={finalBlueprint.enabled}
-                              tabIndex={0}
-                              onClick={() => setFinalBlueprint(current => ({ ...current, enabled: !current.enabled }))}
-                              onKeyDown={event => {
-                                if (event.key === "Enter" || event.key === " ") {
-                                  event.preventDefault();
-                                  setFinalBlueprint(current => ({ ...current, enabled: !current.enabled }));
-                                }
-                              }}
-                              className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${finalBlueprint.enabled ? "bg-emerald-600" : "bg-neutral-300"}`}
+                          <div className="flex flex-wrap items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => void handleDownloadExcelTemplate("FINAL")}
+                              disabled={!finalBlueprint.enabled}
+                              title={!finalBlueprint.enabled ? "Enable the Final Paper before exporting its template" : "Download the blank Final Paper marks template"}
+                              className="flex items-center gap-1.5 h-8 px-3 text-xs font-bold bg-white text-neutral-700 border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
                             >
-                              <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${finalBlueprint.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
-                            </div>
-                          </label>
+                              <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-700" />Excel template
+                            </button>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <span className="text-xs font-bold text-neutral-700">Final paper enabled</span>
+                              <div
+                                role="switch"
+                                aria-checked={finalBlueprint.enabled}
+                                tabIndex={0}
+                                onClick={() => setFinalBlueprint(current => ({ ...current, enabled: !current.enabled }))}
+                                onKeyDown={event => {
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    setFinalBlueprint(current => ({ ...current, enabled: !current.enabled }));
+                                  }
+                                }}
+                                className={`relative w-10 h-5 rounded-full transition-colors cursor-pointer ${finalBlueprint.enabled ? "bg-emerald-600" : "bg-neutral-300"}`}
+                              >
+                                <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${finalBlueprint.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                              </div>
+                            </label>
+                          </div>
                         </div>
 
                         {finalBlueprint.enabled ? (
@@ -2024,6 +2318,29 @@ export default function LecturerConsolePage() {
                         >
                           <Download className="h-3.5 w-3.5" />CSV
                         </button>
+
+                        {!isReadOnly && (
+                          <>
+                            <input
+                              ref={excelImportInputRef}
+                              type="file"
+                              accept=".xlsx,.xls,.csv"
+                              multiple
+                              className="hidden"
+                              aria-label="Import Excel or CSV marks"
+                              onChange={event => void handleExcelImport(event.currentTarget.files)}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => excelImportInputRef.current?.click()}
+                              disabled={isImportingExcel}
+                              className="flex items-center gap-1.5 h-8 px-3 text-xs font-bold rounded-lg border bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 transition-colors cursor-pointer"
+                            >
+                              {isImportingExcel ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5 text-emerald-700" />}
+                              {isImportingExcel ? "Importing…" : "Import Excel"}
+                            </button>
+                          </>
+                        )}
 
                         {!isReadOnly && (
                           <button
@@ -2391,117 +2708,227 @@ export default function LecturerConsolePage() {
                               <div className="rounded-xl border border-dashed border-neutral-200 p-8 text-center text-sm text-neutral-500">No questions are configured in the enabled Final Paper blueprint.</div>
                             ) : (
                               <div className="border border-neutral-200 rounded-xl overflow-auto">
-                                <table className="w-full min-w-[980px] text-xs text-left border-collapse">
+                                <table className="w-full min-w-[1080px] text-xs text-left border-collapse">
                                   <thead>
-                                    <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-500 uppercase tracking-wider border-b border-neutral-200">
-                                      <th className="px-3 py-3 w-10">#</th>
-                                      <th className="px-3 py-3 w-32">Student ID</th>
-                                      <th className="px-3 py-3 text-center w-24">Theory AB</th>
-                                      <th className="px-3 py-3 text-center w-24">Practical AB</th>
-                                      {finalSections.map(section => (
-                                        <th key={section.key} className="px-3 py-3 text-center min-w-36">{section.label}<span className="block text-[9px] font-normal normal-case text-neutral-400">{finalSectionMaxScore(section.blueprint)} required max</span></th>
+                                    <tr className="text-[10px] font-black uppercase tracking-wider border-b border-neutral-200">
+                                      <th rowSpan={2} className="px-4 py-3 w-48 bg-neutral-50 text-neutral-700">Student No</th>
+                                      {theoryFinalSections.length > 0 && (
+                                        <th colSpan={theoryFinalSections.length + 1} className="px-3 py-3 text-center bg-sky-100 text-sky-800">
+                                          Theory · {(finalSectionWeightage(finalBlueprint, "mcq") + finalSectionWeightage(finalBlueprint, "essay")).toFixed(1)}%
+                                        </th>
+                                      )}
+                                      {practicalFinalSections.length > 0 && (
+                                        <th colSpan={practicalFinalSections.length + 1} className="px-3 py-3 text-center bg-amber-100 text-amber-800">
+                                          Practical · {finalSectionWeightage(finalBlueprint, "practical").toFixed(1)}%
+                                        </th>
+                                      )}
+                                      <th rowSpan={2} className="px-3 py-3 text-center bg-emerald-100 text-emerald-900 min-w-36">
+                                        Lecturer total
+                                        <span className="block text-[10px] font-semibold normal-case tracking-normal text-emerald-800">out of {finalBlueprint.weightage}</span>
+                                      </th>
+                                      {showComparison && (
+                                        <th colSpan={2} className="px-3 py-3 text-center bg-orange-100 text-orange-900">
+                                          2nd Examiner Review
+                                        </th>
+                                      )}
+                                      {!isReadOnly && <th rowSpan={2} className="px-3 py-3 text-center bg-neutral-50 text-neutral-700 w-20">Action</th>}
+                                    </tr>
+                                    <tr className="text-[10px] font-bold uppercase tracking-wide border-b border-neutral-200">
+                                      {theoryFinalSections.length > 0 && (
+                                        <th className="px-2 py-3 text-center bg-sky-50 text-sky-800 min-w-24">Theory AB</th>
+                                      )}
+                                      {theoryFinalSections.map(section => (
+                                        <th key={section.key} className={`px-3 py-3 text-center min-w-36 ${section.key === "mcq" ? "bg-sky-50 text-sky-800" : "bg-violet-50 text-violet-800"}`}>
+                                          {section.label.replace("Theory · ", "")}
+                                          <span className="block text-[9px] font-semibold normal-case text-neutral-500">max {finalSectionMaxScore(section.blueprint)}</span>
+                                        </th>
                                       ))}
-                                      <th className="px-3 py-3 text-center bg-emerald-50/60 text-emerald-800">Lecturer raw total</th>
+                                      {practicalFinalSections.length > 0 && (
+                                        <th className="px-2 py-3 text-center bg-amber-50 text-amber-800 min-w-24">Practical AB</th>
+                                      )}
+                                      {practicalFinalSections.map(section => (
+                                        <th key={section.key} className="px-3 py-3 text-center min-w-36 bg-amber-50 text-amber-800">
+                                          {section.label}
+                                          <span className="block text-[9px] font-semibold normal-case text-neutral-500">max {finalSectionMaxScore(section.blueprint)}</span>
+                                        </th>
+                                      ))}
                                       {showComparison && (
                                         <>
-                                          <th className="px-3 py-3 text-center bg-amber-50/60 text-amber-800">2nd raw total</th>
-                                          <th className="px-3 py-3 text-center bg-rose-50/50 text-rose-700" title="Difference between weighted Final Paper contributions">Δ Weighted</th>
+                                          <th className="px-3 py-3 text-center bg-orange-50 text-orange-800 min-w-36">
+                                            Weighted total
+                                            <span className="block text-[9px] font-semibold normal-case text-orange-700">out of {finalBlueprint.weightage}</span>
+                                          </th>
+                                          <th className="px-3 py-3 text-center bg-orange-50 text-orange-800 min-w-24" title="Difference between weighted Final Paper contributions">Δ Weighted</th>
                                         </>
                                       )}
-                                      {!isReadOnly && <th className="px-3 py-3 w-10" />}
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-neutral-100">
                                     {visibleStudents.map(({ row, index }) => {
+                                      const eligible = isRowEligible(row);
                                       const absence = normaliseFinalAbsence(row);
                                       const marks = normaliseFinalMarks(row.finalExamQuestionsMarks, finalBlueprint);
                                       const secondMarks = normaliseFinalMarks(row.secondExamMarks, finalBlueprint);
                                       const finalTotals = computeFinalPaperTotals(row, finalBlueprint, marks);
                                       const secondTotals = computeFinalPaperTotals(row, finalBlueprint, secondMarks);
                                       const hasSecondMarks = hasAnyMark(row.secondExamMarks);
-                                      const variance = showComparison && !absence.isAbsentFinal && hasSecondMarks
+                                      const variance = showComparison && eligible && !absence.isAbsentFinal && hasSecondMarks
                                         ? Math.abs(finalTotals.weighted - secondTotals.weighted)
                                         : null;
-                                      const flagged = variance !== null && variance > VARIANCE_THRESHOLD;
+                                      const hasIssues = eligible && problemIndexes.has(row.studentIndex);
+                                      const varianceFlagged = variance !== null && variance > VARIANCE_THRESHOLD;
 
                                       return (
-                                        <tr key={row.studentIndex} className={`transition-colors ${absence.isAbsentFinal ? "bg-neutral-100/50" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/40"}`}>
-                                          <td className="px-3 py-3 font-bold text-neutral-400">{index + 1}</td>
-                                          <td className="px-3 py-3 font-bold tracking-wider uppercase">{row.studentIndex}</td>
-                                          <td className="px-2 py-2 text-center">
-                                            <button
-                                              disabled={isReadOnly}
-                                              onClick={() => toggleFinalParentAbsence(row.studentIndex, "theory")}
-                                              title={absence.isAbsentTheory ? "Mark Theory present" : "Mark Theory absent"}
-                                              aria-pressed={absence.isAbsentTheory}
-                                              className={`px-2 py-1 text-[9px] font-black rounded cursor-pointer disabled:cursor-default disabled:opacity-70 ${absence.isAbsentTheory ? "bg-rose-600 text-white" : "bg-neutral-100 text-neutral-500 hover:bg-rose-50 hover:text-rose-600"}`}
-                                            >{absence.isAbsentTheory ? "ABSENT" : "Present"}</button>
+                                        <tr
+                                          key={row.studentIndex}
+                                          className={`transition-colors ${!eligible ? "bg-neutral-100 text-neutral-600 opacity-70" : hasIssues ? "bg-rose-50/30" : "hover:bg-neutral-50/40"}`}
+                                        >
+                                          <td className="px-4 py-2.5 whitespace-nowrap">
+                                            <span className="mr-1.5 font-bold text-neutral-500">{index + 1}</span>
+                                            <span className="font-bold tracking-wider uppercase text-neutral-900">{row.studentIndex}</span>
+                                            {hasIssues && (
+                                              <span title="This row still has marksheet issues" className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle" />
+                                            )}
+                                            {!eligible && (
+                                              <span className="ml-2 rounded-full bg-neutral-200 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-neutral-700">Ineligible</span>
+                                            )}
                                           </td>
-                                          <td className="px-2 py-2 text-center">
-                                            <button
-                                              disabled={isReadOnly}
-                                              onClick={() => toggleFinalParentAbsence(row.studentIndex, "practical")}
-                                              title={absence.isAbsentPractical ? "Mark Practical present" : "Mark Practical absent"}
-                                              aria-pressed={absence.isAbsentPractical}
-                                              className={`px-2 py-1 text-[9px] font-black rounded cursor-pointer disabled:cursor-default disabled:opacity-70 ${absence.isAbsentPractical ? "bg-rose-600 text-white" : "bg-neutral-100 text-neutral-500 hover:bg-rose-50 hover:text-rose-600"}`}
-                                            >{absence.isAbsentPractical ? "ABSENT" : "Present"}</button>
-                                          </td>
-                                          {finalSections.map(section => {
-                                            const absent = section.parent === "theory"
-                                              ? absence.isAbsentTheory
-                                              : absence.isAbsentPractical;
+
+                                          {theoryFinalSections.length > 0 && (
+                                            <td className="px-2 py-2 text-center bg-sky-50/30">
+                                              <button
+                                                type="button"
+                                                disabled={isReadOnly}
+                                                onClick={() => toggleFinalParentAbsence(row.studentIndex, "theory")}
+                                                title={absence.isAbsentTheory ? "Mark Theory present" : "Mark Theory absent"}
+                                                aria-pressed={absence.isAbsentTheory}
+                                                className={`rounded px-2 py-1 text-[9px] font-black cursor-pointer disabled:cursor-default disabled:opacity-60 ${absence.isAbsentTheory ? "bg-rose-600 text-white" : "bg-white text-neutral-600 hover:bg-rose-50 hover:text-rose-700"}`}
+                                              >
+                                                {absence.isAbsentTheory ? "AB" : "Present"}
+                                              </button>
+                                            </td>
+                                          )}
+                                          {theoryFinalSections.map(section => {
+                                            const absent = absence.isAbsentTheory;
                                             const sectionMarks = getFinalSectionMarks(marks, section.key);
                                             const requiredQuestions = section.blueprint.questions.slice(0, finalSectionRequiredCount(section.blueprint));
                                             const answered = requiredQuestions.filter(question => sectionMarks[question.id] !== undefined).length;
+                                            const hasMarks = enteredMarks(sectionMarks).length > 0;
                                             const total = computeFinalSectionTotal(sectionMarks, section.blueprint);
                                             const max = finalSectionMaxScore(section.blueprint);
+                                            const tone = section.key === "mcq"
+                                              ? "border-sky-200 bg-sky-50/50 text-sky-900 hover:border-sky-300"
+                                              : "border-violet-200 bg-violet-50/50 text-violet-900 hover:border-violet-300";
                                             return (
-                                              <td key={section.key} className="px-2 py-2 text-center">
+                                              <td key={section.key} className={`px-2 py-2 text-center ${!absent && eligible && answered < requiredQuestions.length ? "bg-amber-50/50" : ""}`}>
                                                 <button
                                                   type="button"
                                                   onClick={() => setFinalPopupTarget({ section: section.key, studentIndex: row.studentIndex })}
                                                   title={`View/edit ${section.label} question marks for ${row.studentIndex}`}
-                                                  className={`w-full min-w-32 rounded-lg border px-2.5 py-2 text-center transition-colors cursor-pointer ${absent ? "border-rose-100 bg-rose-50/70 text-rose-700" : "border-neutral-200 bg-white text-neutral-800 hover:border-emerald-300 hover:bg-emerald-50/40"}`}
+                                                  className={`w-full min-w-32 rounded-lg border px-2.5 py-2 text-center transition-colors cursor-pointer ${absent ? "border-rose-100 bg-rose-50/70 text-rose-700" : tone}`}
                                                 >
-                                                  <span className="block text-xs font-black tabular-nums">{absent ? "AB" : `${total.toFixed(1)} / ${max}`}</span>
-                                                  {!absent && <span className="block mt-0.5 text-[9px] font-semibold text-neutral-400">{answered}/{requiredQuestions.length} required</span>}
+                                                  <span className="block text-xs font-black tabular-nums">{absent ? "AB" : !hasMarks ? "—" : `${total.toFixed(1)} / ${max}`}</span>
+                                                  {!absent && <span className="mt-0.5 block text-[9px] font-semibold text-neutral-500">{answered}/{requiredQuestions.length} required</span>}
                                                 </button>
                                               </td>
                                             );
                                           })}
-                                          <td className="px-3 py-3 text-center font-black text-emerald-800 bg-emerald-50/20 tabular-nums">
-                                            {absence.isAbsentFinal ? "AB" : `${finalTotals.rawTotal.toFixed(1)} / ${finalTotals.maxTotal}`}
+
+                                          {practicalFinalSections.length > 0 && (
+                                            <td className="px-2 py-2 text-center bg-amber-50/30">
+                                              <button
+                                                type="button"
+                                                disabled={isReadOnly}
+                                                onClick={() => toggleFinalParentAbsence(row.studentIndex, "practical")}
+                                                title={absence.isAbsentPractical ? "Mark Practical present" : "Mark Practical absent"}
+                                                aria-pressed={absence.isAbsentPractical}
+                                                className={`rounded px-2 py-1 text-[9px] font-black cursor-pointer disabled:cursor-default disabled:opacity-60 ${absence.isAbsentPractical ? "bg-rose-600 text-white" : "bg-white text-neutral-600 hover:bg-rose-50 hover:text-rose-700"}`}
+                                              >
+                                                {absence.isAbsentPractical ? "AB" : "Present"}
+                                              </button>
+                                            </td>
+                                          )}
+                                          {practicalFinalSections.map(section => {
+                                            const absent = absence.isAbsentPractical;
+                                            const sectionMarks = getFinalSectionMarks(marks, section.key);
+                                            const requiredQuestions = section.blueprint.questions.slice(0, finalSectionRequiredCount(section.blueprint));
+                                            const answered = requiredQuestions.filter(question => sectionMarks[question.id] !== undefined).length;
+                                            const hasMarks = enteredMarks(sectionMarks).length > 0;
+                                            const total = computeFinalSectionTotal(sectionMarks, section.blueprint);
+                                            const max = finalSectionMaxScore(section.blueprint);
+                                            return (
+                                              <td key={section.key} className={`px-2 py-2 text-center ${!absent && eligible && answered < requiredQuestions.length ? "bg-amber-50/50" : ""}`}>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setFinalPopupTarget({ section: section.key, studentIndex: row.studentIndex })}
+                                                  title={`View/edit ${section.label} question marks for ${row.studentIndex}`}
+                                                  className={`w-full min-w-32 rounded-lg border px-2.5 py-2 text-center transition-colors cursor-pointer ${absent ? "border-rose-100 bg-rose-50/70 text-rose-700" : "border-amber-200 bg-amber-50/50 text-amber-900 hover:border-amber-300"}`}
+                                                >
+                                                  <span className="block text-xs font-black tabular-nums">{absent ? "AB" : !hasMarks ? "—" : `${total.toFixed(1)} / ${max}`}</span>
+                                                  {!absent && <span className="mt-0.5 block text-[9px] font-semibold text-neutral-500">{answered}/{requiredQuestions.length} required</span>}
+                                                </button>
+                                              </td>
+                                            );
+                                          })}
+
+                                          <td className="border-l border-emerald-100 bg-emerald-50/40 px-3 py-2 text-center font-black text-emerald-900 tabular-nums">
+                                            <span className="block">{!eligible ? "—" : absence.isAbsentFinal ? "AB" : finalTotals.weighted.toFixed(1)}</span>
+                                            {eligible && !absence.isAbsentFinal && (
+                                              <span className="mt-0.5 block text-[9px] font-semibold text-emerald-700">raw {finalTotals.rawTotal.toFixed(1)} / {finalTotals.maxTotal}</span>
+                                            )}
                                           </td>
                                           {showComparison && (
                                             <>
-                                              <td className="px-3 py-3 text-center font-bold text-amber-800 bg-amber-50/20 tabular-nums">
-                                                {absence.isAbsentFinal ? "AB" : hasSecondMarks ? secondTotals.rawTotal.toFixed(1) : <span className="text-neutral-300">—</span>}
+                                              <td className="bg-orange-50/40 px-3 py-2 text-center font-bold text-orange-900 tabular-nums">
+                                                {!eligible ? "—" : absence.isAbsentFinal ? "AB" : hasSecondMarks ? (
+                                                  <>
+                                                    <span className="block">{secondTotals.weighted.toFixed(1)}</span>
+                                                    <span className="mt-0.5 block text-[9px] font-semibold text-orange-700">raw {secondTotals.rawTotal.toFixed(1)} / {secondTotals.maxTotal}</span>
+                                                  </>
+                                                ) : <span className="text-neutral-400">—</span>}
                                               </td>
-                                              <td className="px-3 py-3 text-center bg-rose-50/20">
-                                                {variance === null ? <span className="text-neutral-300">—</span> : flagged ? (
-                                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-0.5 rounded-full"><span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />{variance.toFixed(1)}</span>
+                                              <td className="bg-orange-50/20 px-3 py-2 text-center">
+                                                {variance === null ? <span className="text-neutral-300">—</span> : varianceFlagged ? (
+                                                  <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-600"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-500" />{variance.toFixed(1)}</span>
                                                 ) : <span className="text-[10px] font-bold text-emerald-600">{variance.toFixed(1)}</span>}
                                               </td>
                                             </>
                                           )}
                                           {!isReadOnly && (
-                                            <td className="px-3 py-3 text-center">
-                                              <button onClick={() => requestRemoveStudent(row)} aria-label={`Remove ${row.studentIndex}`} className="text-neutral-400 hover:text-rose-600 cursor-pointer"><Trash2 className="h-3.5 w-3.5" /></button>
+                                            <td className="px-3 py-2 text-center">
+                                              <button
+                                                type="button"
+                                                onClick={() => requestRemoveStudent(row)}
+                                                aria-label={`Remove ${row.studentIndex}`}
+                                                title={`Remove ${row.studentIndex} from the marksheet`}
+                                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-neutral-500 hover:bg-rose-50 hover:text-rose-700 cursor-pointer"
+                                              >
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                              </button>
                                             </td>
                                           )}
                                         </tr>
                                       );
                                     })}
                                     {visibleStudents.length === 0 && (
-                                      <tr><td colSpan={2 + 2 + finalSections.length + 1 + (showComparison ? 2 : 0) + (isReadOnly ? 0 : 1)} className="px-4 py-8 text-center text-neutral-500 italic">{searchTerm ? `No student matches “${searchTerm}”.` : "No students added yet."}</td></tr>
+                                      <tr>
+                                        <td
+                                          colSpan={1 + (theoryFinalSections.length > 0 ? theoryFinalSections.length + 1 : 0) + (practicalFinalSections.length > 0 ? practicalFinalSections.length + 1 : 0) + 1 + (showComparison ? 2 : 0) + (isReadOnly ? 0 : 1)}
+                                          className="px-4 py-8 text-center italic text-neutral-500"
+                                        >
+                                          {searchTerm ? `No student matches “${searchTerm}”.` : "No students added yet."}
+                                        </td>
+                                      </tr>
                                     )}
                                   </tbody>
                                 </table>
                               </div>
                             )}
 
-                            {!isReadOnly && finalSections.length > 0 && (
-                              <p className="text-[11px] text-neutral-500">Open an MCQ, Essay, or Practical cell to enter question-by-question lecturer marks. Theory absence covers MCQ and Essay together; Practical absence is independent. Marks remain stored while absent and count again if attendance is restored.</p>
+                            {finalSections.length > 0 && (
+                              <p className="text-[11px] text-neutral-500">
+                                Open a section cell to view or edit question marks. Totals show the weighted Final Paper contribution with the raw score beneath; ineligible students remain visible but are excluded from totals. Theory absence covers MCQ and Essay together; Practical absence is independent, and marks are preserved while absent.
+                              </p>
                             )}
                           </div>
                         )}
