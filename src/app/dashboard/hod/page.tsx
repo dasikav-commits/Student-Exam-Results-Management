@@ -18,7 +18,8 @@ import type { CaComponent as SharedCaComponent, FinalBlueprint as SharedFinalBlu
 import {
   Users, BookOpen, Lock, Unlock, Loader2, Layers, TrendingUp, Shield,
   Edit3, X, GraduationCap, FileCheck, ChevronDown, AlertCircle, CheckCircle,
-  Clock, ClipboardList, Eye, Sliders, Flame, LogOut, RefreshCcw, User, Plus
+  Clock, ClipboardList, Eye, Sliders, Flame, LogOut, RefreshCcw, User, Plus,
+  Trash2
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -137,6 +138,25 @@ export default function HodConsolePage() {
   const [modalActiveCodes, setModalActiveCodes] = useState<string[]>([]);
   const [modalExamCodes, setModalExamCodes] = useState<string[]>([]);
 
+  // Edit module dialog
+  const [editModule, setEditModule] = useState<ModuleData | null>(null);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [editFormError, setEditFormError] = useState("");
+  const [editForm, setEditForm] = useState({
+    name: "",
+    lecturerId: "",
+    eligibleStudents: "",
+    deadline: "",
+    components: [] as string[],
+  });
+
+  // Delete module dialog
+  const [deleteModule, setDeleteModule] = useState<ModuleData | null>(null);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
   // Results viewer modal
   const [viewResultsModule, setViewResultsModule] = useState<ModuleData | null>(null);
   const [moduleStudents, setModuleStudents] = useState<any[]>([]);
@@ -168,6 +188,8 @@ export default function HodConsolePage() {
   }, []);
 
   // ── Module freeze toggle ────────────────────────────────────────────────────
+  // NOTE: Freeze column is commented out in the Module Blueprint table. Kept
+  // here so the functionality stays available if the column is re-enabled.
   const toggleFreeze = async (code: string) => {
     setUpdatingId(`freeze-${code}`);
     const mod = modules.find(m => m.code === code);
@@ -256,6 +278,96 @@ export default function HodConsolePage() {
     } finally {
       setIsSavingModule(false);
     }
+  };
+
+  // ── Edit module ─────────────────────────────────────────────────────────────
+  const openEdit = (mod: ModuleData) => {
+    const deadlineValue = mod.deadline
+      ? new Date(mod.deadline).toISOString().slice(0, 10)
+      : "";
+    setEditModule(mod);
+    setEditForm({
+      name: mod.name,
+      lecturerId: mod.assignedActiveLec ? String(mod.assignedActiveLec.id) : "",
+      eligibleStudents: String(mod.eligibleStudents ?? 0),
+      deadline: deadlineValue,
+      components: [...(mod.stats?.moduleComponents ?? [])],
+    });
+    setEditFormError("");
+    setIsEditOpen(true);
+  };
+
+  const handleSaveEdit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editModule) return;
+    setIsSavingEdit(true);
+    setEditFormError("");
+    try {
+      const payload: Record<string, unknown> = {
+        code: editModule.code,
+        name: editForm.name,
+        activeLecturerId: editForm.lecturerId ? Number(editForm.lecturerId) : null,
+        eligibleStudents: Number(editForm.eligibleStudents),
+        deadline: editForm.deadline || null,
+        components: editForm.components,
+      };
+      const res = await fetch("/api/hod/modules", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        setEditFormError(result.error ?? "Failed to update module");
+        return;
+      }
+      setIsEditOpen(false);
+      setEditModule(null);
+      await refreshData();
+    } catch {
+      setEditFormError("Unable to update module. Check your connection and try again.");
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  // ── Delete module ───────────────────────────────────────────────────────────
+  const openDelete = (mod: ModuleData) => {
+    setDeleteModule(mod);
+    setDeleteError("");
+    setIsDeleteOpen(true);
+  };
+
+  const handleDelete = async () => {
+    if (!deleteModule) return;
+    setIsDeleting(true);
+    setDeleteError("");
+    try {
+      const res = await fetch(`/api/hod/modules?code=${encodeURIComponent(deleteModule.code)}`, {
+        method: "DELETE",
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        setDeleteError(result.error ?? "Failed to delete module");
+        return;
+      }
+      setIsDeleteOpen(false);
+      setDeleteModule(null);
+      await refreshData();
+    } catch {
+      setDeleteError("Unable to delete module. Check your connection and try again.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const toggleEditComponent = (value: string) => {
+    setEditForm(prev => ({
+      ...prev,
+      components: prev.components.includes(value)
+        ? prev.components.filter(c => c !== value)
+        : [...prev.components, value],
+    }));
   };
 
   // ── Results viewer ─────────────────────────────────────────────────────────
@@ -362,8 +474,8 @@ export default function HodConsolePage() {
                       </div>
                     )}
                     <div className="border-t border-neutral-100 pt-1 mt-1">
-                      <button 
-                        onClick={() => { setIsWorkspaceMenuOpen(false); setIsProfileOpen(true); }} 
+                      <button
+                        onClick={() => { setIsWorkspaceMenuOpen(false); setIsProfileOpen(true); }}
                         className="w-full text-left flex items-center gap-2 px-3 py-2 text-neutral-700 font-semibold rounded-lg hover:bg-neutral-50 cursor-pointer"
                       >
                         <User className="h-3.5 w-3.5" />Profile Settings
@@ -425,6 +537,9 @@ export default function HodConsolePage() {
 
         {/* ══════════════════════════════════════════════════════════════════════
             TAB 1 — MODULE BLUEPRINT CONTROL
+            Visible columns (8): Module, Lecturer, Components, Eligibility Level,
+              Deadline, CA Components, Exam, Action
+            Commented out (remove comments to restore): Examiner, Status, Freeze
         ══════════════════════════════════════════════════════════════════════ */}
         {activeTab === "modules" && (
           <div className="bg-white rounded-2xl premium-border overflow-hidden">
@@ -444,15 +559,17 @@ export default function HodConsolePage() {
                 <thead>
                   <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200">
                     <th className="px-5 py-3">Module</th>
-                    <th className="px-5 py-3">Active Lecturer</th>
+                    {/* was: Active Lecturer */}
+                    <th className="px-5 py-3">Lecturer</th>
                     <th className="px-5 py-3">Components</th>
                     <th className="px-5 py-3 text-center">Eligibility Level</th>
                     <th className="px-5 py-3">Deadline</th>
-                    <th className="px-5 py-3">Examiner</th>
+                    {/* <th className="px-5 py-3">Examiner</th> */}
                     <th className="px-5 py-3 text-center">CA Components</th>
                     <th className="px-5 py-3 text-center">Exam</th>
-                    <th className="px-5 py-3 text-center">Status</th>
-                    <th className="px-5 py-3 text-center">Freeze</th>
+                    {/* <th className="px-5 py-3 text-center">Status</th> */}
+                    {/* <th className="px-5 py-3 text-center">Freeze</th> */}
+                    <th className="px-5 py-3 text-center">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100">
@@ -480,9 +597,11 @@ export default function HodConsolePage() {
                       <td className="px-5 py-4 whitespace-nowrap">
                         {mod.deadline ? new Date(mod.deadline).toLocaleDateString() : <span className="text-neutral-300">—</span>}
                       </td>
+                      {/* Examiner cell — uncomment header above too to restore
                       <td className="px-5 py-4 font-semibold">
                         {mod.assignedExamLec?.fullName ?? <span className="text-neutral-300 italic text-[11px]">Unassigned</span>}
                       </td>
+                      */}
                       <td className="px-5 py-4 text-center">
                         <span className="font-bold">{(mod.stats?.caComponents ?? []).length}</span>
                       </td>
@@ -493,9 +612,12 @@ export default function HodConsolePage() {
                           <span className="text-neutral-300 text-[11px]">No</span>
                         )}
                       </td>
+                      {/* Status cell — uncomment header above too to restore
                       <td className="px-5 py-4 text-center">
                         <StatusBadge status={mod.stats?.marksheetStatus} />
                       </td>
+                      */}
+                      {/* Freeze cell — uncomment header above too to restore
                       <td className="px-5 py-4 text-center">
                         <button
                           onClick={() => toggleFreeze(mod.code)}
@@ -505,10 +627,29 @@ export default function HodConsolePage() {
                           {updatingId === `freeze-${mod.code}` ? <Loader2 className="h-3 w-3 animate-spin" /> : mod.isFrozen ? <><Lock className="h-3 w-3" />Frozen</> : <><Unlock className="h-3 w-3" />Freeze</>}
                         </button>
                       </td>
+                      */}
+                      <td className="px-5 py-4 text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            onClick={() => openEdit(mod)}
+                            className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg text-[10px] font-bold bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 transition-all cursor-pointer"
+                            title={`Edit ${mod.code}`}
+                          >
+                            <Edit3 className="h-3 w-3" />Edit
+                          </button>
+                          <button
+                            onClick={() => openDelete(mod)}
+                            className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg text-[10px] font-bold bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 transition-all cursor-pointer"
+                            title={`Delete ${mod.code}`}
+                          >
+                            <Trash2 className="h-3 w-3" />Delete
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                   {modules.length === 0 && (
-                    <tr><td colSpan={10} className="px-5 py-10 text-center text-neutral-400 italic">No modules found.</td></tr>
+                    <tr><td colSpan={8} className="px-5 py-10 text-center text-neutral-400 italic">No modules found.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -518,6 +659,8 @@ export default function HodConsolePage() {
 
         {/* ══════════════════════════════════════════════════════════════════════
             TAB 2 — LECTURER ROSTER & ASSIGNMENTS
+            Visible columns (3): Name / Email, Module, Manage
+            Commented out (remove comments to restore): Roles, Exam Modules
         ══════════════════════════════════════════════════════════════════════ */}
         {activeTab === "lecturers" && (
           <div className="bg-white rounded-2xl premium-border overflow-hidden">
@@ -528,9 +671,10 @@ export default function HodConsolePage() {
               <thead>
                 <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200">
                   <th className="px-5 py-3">Name / Email</th>
-                  <th className="px-5 py-3">Roles</th>
-                  <th className="px-5 py-3">Active Modules</th>
-                  <th className="px-5 py-3">Exam Modules</th>
+                  {/* <th className="px-5 py-3">Roles</th> */}
+                  {/* was: Active Modules */}
+                  <th className="px-5 py-3">Module</th>
+                  {/* <th className="px-5 py-3">Exam Modules</th> */}
                   <th className="px-5 py-3 text-center">Manage</th>
                 </tr>
               </thead>
@@ -541,6 +685,7 @@ export default function HodConsolePage() {
                       <p className="font-bold">{lec.fullName}</p>
                       <p className="text-neutral-400 text-[11px]">{lec.email}</p>
                     </td>
+                    {/* Roles cell — uncomment header above too to restore
                     <td className="px-5 py-4">
                       <div className="flex flex-wrap gap-1">
                         {lec.isHod && <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-neutral-900 text-white uppercase">HOD</span>}
@@ -549,6 +694,7 @@ export default function HodConsolePage() {
                         {!lec.isHod && !lec.isActiveLec && !lec.isExamLec && <span className="text-neutral-300 text-[11px] italic">None</span>}
                       </div>
                     </td>
+                    */}
                     <td className="px-5 py-4">
                       {lec.activeModules.length > 0 ? (
                         <div className="flex flex-wrap gap-1">
@@ -558,6 +704,7 @@ export default function HodConsolePage() {
                         </div>
                       ) : <span className="text-neutral-300 italic text-[11px]">None</span>}
                     </td>
+                    {/* Exam Modules cell — uncomment header above too to restore
                     <td className="px-5 py-4">
                       {lec.examModules.length > 0 ? (
                         <div className="flex flex-wrap gap-1">
@@ -567,6 +714,7 @@ export default function HodConsolePage() {
                         </div>
                       ) : <span className="text-neutral-300 italic text-[11px]">None</span>}
                     </td>
+                    */}
                     <td className="px-5 py-4 text-center">
                       <button
                         onClick={() => openModal(lec)}
@@ -578,7 +726,7 @@ export default function HodConsolePage() {
                   </tr>
                 ))}
                 {lecturers.length === 0 && (
-                  <tr><td colSpan={5} className="px-5 py-10 text-center text-neutral-400 italic">No lecturers found.</td></tr>
+                  <tr><td colSpan={3} className="px-5 py-10 text-center text-neutral-400 italic">No lecturers found.</td></tr>
                 )}
               </tbody>
             </table>
@@ -587,6 +735,9 @@ export default function HodConsolePage() {
 
         {/* ══════════════════════════════════════════════════════════════════════
             TAB 3 — RESULT SHEETS
+            Visible columns (3): Module, Lecturer, Action
+            Commented out (remove comments to restore): Examiner, Status
+            (The status legend above the table is left in place.)
         ══════════════════════════════════════════════════════════════════════ */}
         {activeTab === "results" && (
           <div className="space-y-4">
@@ -608,9 +759,10 @@ export default function HodConsolePage() {
                 <thead>
                   <tr className="bg-neutral-50 text-[10px] font-bold text-neutral-400 uppercase tracking-wider border-b border-neutral-200">
                     <th className="px-5 py-3">Module</th>
-                    <th className="px-5 py-3">Active Lecturer</th>
-                    <th className="px-5 py-3">Examiner</th>
-                    <th className="px-5 py-3 text-center">Status</th>
+                    {/* was: Active Lecturer */}
+                    <th className="px-5 py-3">Lecturer</th>
+                    {/* <th className="px-5 py-3">Examiner</th> */}
+                    {/* <th className="px-5 py-3 text-center">Status</th> */}
                     <th className="px-5 py-3 text-center">Action</th>
                   </tr>
                 </thead>
@@ -622,10 +774,14 @@ export default function HodConsolePage() {
                         <p className="text-neutral-400 text-[11px]">{mod.name}</p>
                       </td>
                       <td className="px-5 py-4 font-semibold">{mod.assignedActiveLec?.fullName ?? "—"}</td>
+                      {/* Examiner cell — uncomment header above too to restore
                       <td className="px-5 py-4 font-semibold">{mod.assignedExamLec?.fullName ?? "—"}</td>
+                      */}
+                      {/* Status cell — uncomment header above too to restore
                       <td className="px-5 py-4 text-center">
                         <StatusBadge status={mod.stats?.marksheetStatus} />
                       </td>
+                      */}
                       <td className="px-5 py-4 text-center">
                         <button
                           onClick={() => viewResults(mod)}
@@ -728,6 +884,139 @@ export default function HodConsolePage() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* ── Edit Module Dialog ───────────────────────────────────────────────── */}
+      {isEditOpen && editModule && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <form onSubmit={handleSaveEdit} className="bg-white w-full max-w-2xl rounded-xl shadow-2xl border border-neutral-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-5 border-b border-neutral-100 bg-neutral-50 flex justify-between items-center">
+              <div>
+                <h3 className="font-bold text-sm">Edit Module</h3>
+                <p className="text-xs text-neutral-400 mt-0.5">
+                  Updating <span className="font-mono font-bold text-neutral-700">{editModule.code}</span> — module code cannot be changed because existing marks reference it.
+                </p>
+              </div>
+              <button type="button" onClick={() => { setIsEditOpen(false); setEditModule(null); }} aria-label="Close" className="w-8 h-8 border border-neutral-200 flex items-center justify-center hover:bg-neutral-100 cursor-pointer">
+                <X className="h-4 w-4 text-neutral-500" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <label className="space-y-1.5 sm:col-span-2">
+                  <span className="text-xs font-bold text-neutral-600">Module name</span>
+                  <input required maxLength={120} value={editForm.name} onChange={e => setEditForm(p => ({ ...p, name: e.target.value }))} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-500" />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-bold text-neutral-600">Module code</span>
+                  <input disabled value={editModule.code} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm font-mono uppercase bg-neutral-50 text-neutral-500 cursor-not-allowed" />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-bold text-neutral-600">Lecturer</span>
+                  <select value={editForm.lecturerId} onChange={e => setEditForm(p => ({ ...p, lecturerId: e.target.value }))} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm bg-white focus:outline-none focus:border-neutral-500">
+                    <option value="">Unassigned</option>
+                    {lecturers.map(l => <option key={l.id} value={l.id}>{l.fullName}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-bold text-neutral-600">Eligibility Level</span>
+                  <input required type="number" min="0" step="1" value={editForm.eligibleStudents} onChange={e => setEditForm(p => ({ ...p, eligibleStudents: e.target.value }))} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-500" />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-xs font-bold text-neutral-600">Deadline</span>
+                  <input type="date" value={editForm.deadline} onChange={e => setEditForm(p => ({ ...p, deadline: e.target.value }))} className="w-full h-10 px-3 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:border-neutral-500" />
+                </label>
+              </div>
+
+              <fieldset>
+                <legend className="text-xs font-bold text-neutral-600 mb-2">Components</legend>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {[
+                    { value: "CONTINUOUS_ASSESSMENT", label: "Continuous Assessments" },
+                    { value: "PRACTICAL", label: "Practical" },
+                    { value: "LAB_SESSIONS", label: "Lab Sessions" },
+                  ].map(component => {
+                    const selected = editForm.components.includes(component.value);
+                    return (
+                      <label key={component.value} className={`flex items-center gap-2.5 p-3 border rounded-lg text-xs font-semibold cursor-pointer ${selected ? "border-emerald-500 bg-emerald-50/60 text-emerald-800" : "border-neutral-200 text-neutral-600 hover:bg-neutral-50"}`}>
+                        <input type="checkbox" checked={selected} onChange={() => toggleEditComponent(component.value)} className="accent-emerald-600" />
+                        {component.label}
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-neutral-400 mt-2">
+                  Changing components does not affect CA or final-exam blueprints already authored by the lecturer.
+                </p>
+              </fieldset>
+
+              {editFormError && (
+                <p role="alert" className="flex items-center gap-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-100 rounded-lg p-3">
+                  <AlertCircle className="h-4 w-4 shrink-0" />{editFormError}
+                </p>
+              )}
+            </div>
+
+            <div className="p-5 border-t border-neutral-100 bg-neutral-50 flex justify-end gap-3">
+              <button type="button" onClick={() => { setIsEditOpen(false); setEditModule(null); }} className="h-9 px-4 text-xs font-bold rounded-lg border border-neutral-300 text-neutral-700 bg-white hover:bg-neutral-50 cursor-pointer">Cancel</button>
+              <button type="submit" disabled={isSavingEdit} className="h-9 px-5 text-xs font-bold rounded-lg bg-[#1a1a1a] text-white hover:bg-neutral-800 disabled:opacity-50 cursor-pointer flex items-center gap-2">
+                {isSavingEdit ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle className="h-3.5 w-3.5" />}
+                Save changes
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ── Delete Module Confirmation ──────────────────────────────────────── */}
+      {isDeleteOpen && deleteModule && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white w-full max-w-md rounded-xl shadow-2xl border border-neutral-200 overflow-hidden">
+            <div className="p-5 border-b border-neutral-100 bg-rose-50/60 flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full bg-rose-100 flex items-center justify-center text-rose-700">
+                  <Trash2 className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-rose-900">Delete module?</h3>
+                  <p className="text-xs text-rose-700/80 mt-0.5">This cannot be undone.</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => { setIsDeleteOpen(false); setDeleteModule(null); }} aria-label="Close" className="w-8 h-8 border border-rose-200 flex items-center justify-center hover:bg-rose-100 cursor-pointer rounded">
+                <X className="h-4 w-4 text-rose-700" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-sm">
+              <p className="text-neutral-700">
+                You are about to permanently delete{" "}
+                <span className="font-mono font-bold text-neutral-900">{deleteModule.code}</span>{" "}
+                <span className="text-neutral-500">({deleteModule.name})</span>.
+              </p>
+              <div className="bg-rose-50 border border-rose-100 rounded-lg p-3 text-xs text-rose-800 flex gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>
+                  All student marks, component blueprints and examiner records for this module will be
+                  <strong> permanently removed</strong>. Lecturer assignments will be cleared.
+                </span>
+              </div>
+              {deleteError && (
+                <p role="alert" className="flex items-center gap-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-100 rounded-lg p-3">
+                  <AlertCircle className="h-4 w-4 shrink-0" />{deleteError}
+                </p>
+              )}
+            </div>
+
+            <div className="p-5 border-t border-neutral-100 bg-neutral-50 flex justify-end gap-3">
+              <button type="button" onClick={() => { setIsDeleteOpen(false); setDeleteModule(null); }} className="h-9 px-4 text-xs font-bold rounded-lg border border-neutral-300 text-neutral-700 bg-white hover:bg-neutral-50 cursor-pointer">Cancel</button>
+              <button type="button" onClick={handleDelete} disabled={isDeleting} className="h-9 px-5 text-xs font-bold rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50 cursor-pointer flex items-center gap-2">
+                {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                Delete module
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
