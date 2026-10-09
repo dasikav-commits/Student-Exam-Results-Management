@@ -447,7 +447,9 @@ export default function HodConsolePage() {
                         </div>
                       </button>
                     )}
-                    {/* Switch to Examiner Hub */}
+                    {/* Switch to Examiner Hub — commented out per HOD request.
+                        Uncomment this block (and the "Not assigned as Examiner" lock
+                        immediately below) to restore the Examiner Hub option.
                     {caps.isExamLec && (
                       <button
                         onClick={() => { setIsWorkspaceMenuOpen(false); router.push("/dashboard/examiner"); }}
@@ -460,6 +462,7 @@ export default function HodConsolePage() {
                         </div>
                       </button>
                     )}
+                    */}
                     {/* Disabled locks when no capability */}
                     {!caps.isActiveLec && (
                       <div className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-neutral-50/60 text-neutral-300 cursor-not-allowed">
@@ -467,12 +470,15 @@ export default function HodConsolePage() {
                         <span className="text-[10px]">Not assigned as Active Lecturer</span>
                       </div>
                     )}
+                    {/* "Not assigned as Examiner" lock — commented out together with the
+                        Examiner Hub entry above. Uncomment both blocks to restore.
                     {!caps.isExamLec && (
                       <div className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-neutral-50/60 text-neutral-300 cursor-not-allowed">
                         <Lock className="h-3.5 w-3.5" />
                         <span className="text-[10px]">Not assigned as Examiner</span>
                       </div>
                     )}
+                    */}
                     <div className="border-t border-neutral-100 pt-1 mt-1">
                       <button
                         onClick={() => { setIsWorkspaceMenuOpen(false); setIsProfileOpen(true); }}
@@ -1053,6 +1059,10 @@ export default function HodConsolePage() {
                 </div>
               </div>
 
+              {/* Assign as Examiner section — commented out per HOD request.
+                   modalExamCodes state is preserved and still sent on Save so
+                   existing examiner assignments are NOT wiped. Uncomment the block
+                   below to restore the UI.
               <div>
                 <h4 className="text-xs font-bold uppercase text-neutral-400 tracking-wider mb-3 flex items-center gap-2">
                   <span className="w-3 h-3 rounded-full bg-amber-500 inline-block" />
@@ -1070,6 +1080,7 @@ export default function HodConsolePage() {
                   ))}
                 </div>
               </div>
+              */}
             </div>
 
             <div className="p-5 border-t border-neutral-100 bg-neutral-50 flex justify-end gap-3">
