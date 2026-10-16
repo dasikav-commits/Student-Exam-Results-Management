@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
+import RoleGuard from "@/components/layout/RoleGuard";
 import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import { 
@@ -41,9 +42,16 @@ interface AcademicModule {
   name: string;
   assignedLecturerName: string;
   totalStudents: number;
+  activeLecturerId: number | null;
+  examLecturerId: number | null;
+  assignmentLocked: boolean;
 }
 
 export default function AdminDashboard() {
+  return <RoleGuard allowedRoles={["ADMIN"]}><AdminConsole /></RoleGuard>;
+}
+
+function AdminConsole() {
   useRequireAuth();  // ← redirects to /login if no session
   const { logout } = useAuth();
   const [activeTab, setActiveTab] = useState<"USERS" | "MODULES">("USERS");
@@ -56,6 +64,8 @@ export default function AdminDashboard() {
   const [users, setUsers] = useState<SystemUser[]>([]);
   const [modules, setModules] = useState<AcademicModule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [assignmentFeedback, setAssignmentFeedback] = useState("");
+  const [assigningModule, setAssigningModule] = useState<string | null>(null);
 
   // Form input field states
   const [email, setEmail] = useState("");
@@ -70,7 +80,9 @@ export default function AdminDashboard() {
   useEffect(() => {
     async function bootstrapDashboardData() {
       try {
-        const response = await fetch("/api/admin/users");
+        const [response, moduleResponse] = await Promise.all([fetch("/api/admin/users"), fetch("/api/admin/modules")]);
+        if (moduleResponse.ok) setModules(await moduleResponse.json());
+        else setAssignmentFeedback("Failed to load module assignments. Reload to retry.");
         if (response.ok) {
           const data = await response.json();
           const transformedUsers = data.map((u: any) => ({
@@ -96,6 +108,22 @@ export default function AdminDashboard() {
     }
     bootstrapDashboardData();
   }, []);
+
+  const assignSecondExaminer = async (mod: AcademicModule, rawId: string) => {
+    setAssigningModule(mod.code);
+    setAssignmentFeedback("");
+    try {
+      const response = await fetch("/api/admin/modules", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ moduleCode: mod.code, examLecturerId: rawId ? Number(rawId) : null }),
+      });
+      const result = await response.json();
+      if (!response.ok) { setAssignmentFeedback(result.error ?? "Assignment failed."); return; }
+      setModules(previous => previous.map(item => item.code === mod.code ? { ...item, examLecturerId: result.examLecturerId } : item));
+      setAssignmentFeedback(`Second Examiner assignment saved for ${mod.code}.`);
+    } catch { setAssignmentFeedback("Network error saving assignment. Please retry."); }
+    finally { setAssigningModule(null); }
+  };
 
   const handleCreateUserAccount = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -291,6 +319,7 @@ export default function AdminDashboard() {
           </div>
         </div>
 
+        {activeTab === "MODULES" && <p role="status" className="px-6 py-3 text-xs text-slate-600">{assignmentFeedback || "Assign Second Examiners here. Enable their Second Examiner capability in Users first. Recall submitted marksheets before reassigning."}</p>}
         {/* Main Structural Output Grid Container */}
         <div className="overflow-x-auto">
           {isLoading ? (
@@ -315,7 +344,8 @@ export default function AdminDashboard() {
                     <>
                       <th className="p-4">Code</th>
                       <th className="p-4">Course Module Name</th>
-                      <th className="p-4">Assigned Director Core</th>
+                      <th className="p-4">First Examiner (Module Lecturer)</th>
+                      <th className="p-4">Second Examiner</th>
                       <th className="p-4 pr-6">Roster Metrics</th>
                     </>
                   )}
@@ -418,7 +448,7 @@ export default function AdminDashboard() {
                       </tr>
                     ))
                   ) : (
-                    modules.map((m, idx) => (
+                    modules.filter(m => `${m.code} ${m.name}`.toLowerCase().includes(searchQuery.toLowerCase())).map((m, idx) => (
                       <tr key={m.id} className="hover:bg-slate-50/50 transition-colors">
                         <td className="p-4 pl-6 font-bold text-slate-400">{idx + 1}</td>
                         <td className="p-4">
@@ -428,6 +458,19 @@ export default function AdminDashboard() {
                         </td>
                         <td className="p-4 font-bold text-slate-800 text-sm">{m.name}</td>
                         <td className="p-4 font-semibold text-slate-600">{m.assignedLecturerName}</td>
+                        <td className="p-4">
+                          <select aria-label={`Second Examiner for ${m.code}`} value={m.examLecturerId ?? ""}
+                            disabled={m.assignmentLocked || assigningModule !== null}
+                            onChange={event => void assignSecondExaminer(m, event.target.value)}
+                            className="max-w-64 rounded-lg border border-slate-200 bg-white p-2 disabled:opacity-50">
+                            <option value="">Not assigned</option>
+                            {users.filter(u => u.role === "LECTURER" && u.capabilities.isExamLec && Number(u.id) !== m.activeLecturerId).map(u => (
+                              <option key={u.id} value={u.id}>{u.fullName || u.email}</option>
+                            ))}
+                            {m.examLecturerId && !users.some(u => Number(u.id) === m.examLecturerId && u.capabilities.isExamLec) && <option value={m.examLecturerId}>Current examiner (capability disabled)</option>}
+                          </select>
+                          {m.assignmentLocked && <span className="block mt-1 text-[10px]">Assignment locked</span>}
+                        </td>
                         <td className="p-4 pr-6 font-bold text-blue-600">
                           {m.totalStudents} Enrolled
                         </td>
@@ -544,7 +587,7 @@ export default function AdminDashboard() {
 
                   <label className="flex items-center space-x-2.5 cursor-pointer">
                     <input type="checkbox" checked={isExamLec} onChange={(e) => setIsExamLec(e.target.checked)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500/20 h-3.5 w-3.5" />
-                    <span className="font-semibold text-slate-600">Assign Panel Examiner Desk Access</span>
+                    <span className="font-semibold text-slate-600">Assign Second Examiner Desk Access</span>
                   </label>
                 </div>
               </div>

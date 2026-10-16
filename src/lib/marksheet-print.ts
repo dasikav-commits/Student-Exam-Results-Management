@@ -1,3 +1,4 @@
+import { gradeForMark, hasGradeAbsence, roundUpWhole } from "@/lib/grading";
 import type { CaComponent, FinalBlueprint, FinalSectionKey } from "@/types/hod";
 import {
   caGroupOf,
@@ -49,7 +50,7 @@ function esc(value: unknown): string {
 }
 
 function fmt(value: number | null | undefined): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? "—" : value.toFixed(1);
+  return value === null || value === undefined || !Number.isFinite(value) ? "—" : value.toFixed(2);
 }
 
 export function buildMarksheetPrintHtml({
@@ -121,13 +122,14 @@ export function buildMarksheetPrintHtml({
         finalCells +
         `<td class="grand">${fmt(finalTotals.weighted)}</td>` +
         examinerCell +
-        `<td class="grand total">${fmt(weighted.total)}</td>` +
+        `<td class="grand total">${roundUpWhole(weighted.total)}</td>` +
+        `<td>${gradeForMark(weighted.total, { incomplete: hasGradeAbsence(row) }).grade}</td>` +
         `</tr>`
       );
     })
     .join("");
 
-  const columnCount = 1 + caComponents.length + 1 + sections.length + 1 + (hasExaminer ? 1 : 0) + 1;
+  const columnCount = 1 + caComponents.length + 1 + sections.length + 1 + (hasExaminer ? 1 : 0) + 2;
   const empty = eligibleRows.length === 0
     ? `<tr><td colspan="${columnCount}" class="empty">No eligible students on this marksheet.</td></tr>`
     : "";
@@ -180,16 +182,18 @@ export function buildMarksheetPrintHtml({
         <th>Final weighted<span class="sub">out of ${finalWeight}</span></th>
         ${hasExaminer ? `<th>2nd Examiner raw</th>` : ""}
         <th>Module Mark<span class="sub">out of 100</span></th>
+        <th>Grade</th>
       </tr>
     </thead>
     <tbody>${body}${empty}</tbody>
   </table>
   <p class="note">
     Component cells show raw totals against each maximum; weighted columns show each block's contribution to the module mark.
+    Module marks round up for display; grades use raw marks. Any absence gives I.
     AB marks absence for that component or Final Paper parent. Absent parents contribute zero to the weighted totals.
   </p>
   <div class="sig">
-    <div>Lecturer</div>
+    <div>First Examiner (Module Lecturer)</div>
     <div>Second Examiner</div>
     <div>Head of Department</div>
   </div>

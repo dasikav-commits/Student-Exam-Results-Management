@@ -133,6 +133,7 @@ export async function PATCH(request: Request) {
       finalBlueprint?: unknown;
       eligibleStudents?: unknown;
       submittedTo?: unknown;
+      secondChecking?: unknown;
     } | null;
 
     if (!body) {
@@ -170,6 +171,13 @@ export async function PATCH(request: Request) {
           { error: "Module is frozen by the HOD. The marksheet cannot change state." },
           { status: 403 }
         );
+      }
+
+      if (target === "SECOND_CHECKING" && body.submittedTo === "SECOND_EXAMINER" && !existing.examLecturerId) {
+        return NextResponse.json({ error: "Assign a Second Examiner before sending this marksheet." }, { status: 400 });
+      }
+      if (target === "SECOND_CHECKING" && body.submittedTo !== undefined && !["FACULTY", "HOD", "SECOND_EXAMINER"].includes(String(body.submittedTo))) {
+        return NextResponse.json({ error: "Invalid submission recipient." }, { status: 400 });
       }
 
       // Idempotent: asking for the state we are already in is not an error.
@@ -240,10 +248,9 @@ export async function PATCH(request: Request) {
       }
 
       const now = new Date().toISOString();
-      // The submit dropdown addresses the same submission to either the Second
-      // Examiner ("Faculty") or the HOD; only those two values are recorded.
+      // All three submission recipients hand over the marksheet for second checking.
       const submittedTo =
-        target === "SECOND_CHECKING" && (body.submittedTo === "FACULTY" || body.submittedTo === "HOD")
+        target === "SECOND_CHECKING" && (body.submittedTo === "FACULTY" || body.submittedTo === "HOD" || body.submittedTo === "SECOND_EXAMINER")
           ? body.submittedTo
           : undefined;
       const transitionMeta: Record<string, unknown> =
@@ -275,7 +282,7 @@ export async function PATCH(request: Request) {
           { status: 403 }
         );
       }
-      if (isLecturerLocked(currentStatus)) {
+      if (isLecturerLocked(currentStatus) || currentStatus === "SECOND_CHECKING") {
         return NextResponse.json(
           {
             error: `The authorised cohort cannot be changed once the marksheet is ${currentStatus}.`,
@@ -301,6 +308,9 @@ export async function PATCH(request: Request) {
       );
     }
 
+    if (body.secondChecking !== undefined && body.secondChecking !== "required" && body.secondChecking !== "optional") {
+      return NextResponse.json({ error: "Second checking must be required or optional." }, { status: 400 });
+    }
     const structureError = validateBlueprintInput(body.caComponents, body.finalBlueprint);
     if (structureError) {
       return NextResponse.json({ error: structureError }, { status: 400 });
@@ -315,7 +325,7 @@ export async function PATCH(request: Request) {
 
     // A blueprint defines the shape of every recorded mark — after the Examiner
     // has finalised, changing it would orphan the marks already signed off.
-    if (isLecturerLocked(currentStatus)) {
+    if (isLecturerLocked(currentStatus) || currentStatus === "SECOND_CHECKING") {
       return NextResponse.json(
         {
           error: `The blueprint cannot be changed once the marksheet is ${currentStatus}.`,
@@ -338,6 +348,7 @@ export async function PATCH(request: Request) {
       caComponents,
       finalBlueprint,
       examTemplate,
+      secondChecking: body.secondChecking === "optional" ? "optional" : body.secondChecking === "required" ? "required" : currentStats.secondChecking ?? "required",
       caCompletionRate: caComponents.length > 0 ? 100 : 0,
       blueprintUpdatedAt: new Date().toISOString(),
       // Preserve existing marksheetStatus or set to DRAFT

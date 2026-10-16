@@ -1,5 +1,6 @@
 "use client";
 
+import { isEditedMark } from "@/lib/second-examiner";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
@@ -164,6 +165,7 @@ export default function LecturerConsolePage() {
 
   // Blueprint state
   const [caComponents, setCaComponents] = useState<CaComponent[]>([]);
+  const [secondChecking, setSecondChecking] = useState<"required" | "optional">("required");
   const [finalBlueprint, setFinalBlueprint] = useState<FinalBlueprint>(EMPTY_BLUEPRINT);
   /** Last server-confirmed blueprint, used to flag structural edits. */
   const [savedBlueprint, setSavedBlueprint] = useState<{ ca: CaComponent[]; bp: FinalBlueprint } | null>(null);
@@ -219,7 +221,7 @@ export default function LecturerConsolePage() {
   const isFrozen = activeModule?.isFrozen ?? false;
   /** Post-finalisation states close the lecturer's ledger entirely. */
   const isLockedByStatus = isLecturerLocked(activeStatus);
-  const isReadOnly = isFrozen || isLockedByStatus;
+  const isReadOnly = isFrozen || isLockedByStatus || activeStatus === "SECOND_CHECKING";
   const isSecondChecking = activeStatus === "SECOND_CHECKING";
   const lecturerApproved = activeStats.lecturerApproved === true;
   const showComparison =
@@ -252,9 +254,12 @@ export default function LecturerConsolePage() {
     // Legacy flat blueprints are mapped into Theory → Essay on module load.
     const nextCa: CaComponent[] = normaliseCaComponents(stats.caComponents);
     const nextBp: FinalBlueprint = normaliseFinalBlueprint(stats.finalBlueprint ?? EMPTY_BLUEPRINT, stats.examTemplate);
+    setSecondChecking(stats.secondChecking ?? "required");
     setCaComponents(nextCa);
     setFinalBlueprint(nextBp);
     setSavedBlueprint({ ca: nextCa, bp: nextBp });
+
+    if (mod.isExaminerViewOnly) return;
 
     try {
       const r = await fetch(`/api/lecturer/marks?moduleCode=${encodeURIComponent(mod.code)}`);
@@ -322,7 +327,7 @@ export default function LecturerConsolePage() {
   // ── Auth-guarded module fetch ───────────────────────────────────────────────
   useEffect(() => {
     const email = user?.email;
-    if (!email) return;   // no session — useRequireAuth handles the redirect
+    if (!email || !user?.capabilities.isActiveLec) return;   // no session — useRequireAuth handles the redirect
 
     let cancelled = false;
 
@@ -331,7 +336,7 @@ export default function LecturerConsolePage() {
       try {
         const res = await fetch(`/api/lecturer/modules?email=${encodeURIComponent(email)}`);
         if (!res.ok || cancelled) return;
-        const data: DepartmentModule[] = await res.json();
+        const data: DepartmentModule[] = (await res.json()).filter((mod: DepartmentModule) => !mod.isExaminerViewOnly);
         if (cancelled) return;
         setModules(data);
         if (data.length > 0) await selectModule(data[0]);
@@ -346,7 +351,7 @@ export default function LecturerConsolePage() {
     return () => {
       cancelled = true;
     };
-  }, [user?.email, selectModule]);
+  }, [user?.email, user?.capabilities.isActiveLec, selectModule]);
 
   // ── Unsaved-changes guard ──────────────────────────────────────────────────
   useEffect(() => {
@@ -410,8 +415,9 @@ export default function LecturerConsolePage() {
   const isBlueprintDirty = useMemo(() => {
     if (!savedBlueprint) return false;
     return JSON.stringify(savedBlueprint.ca) !== JSON.stringify(caComponents)
-      || JSON.stringify(savedBlueprint.bp) !== JSON.stringify(finalBlueprint);
-  }, [savedBlueprint, caComponents, finalBlueprint]);
+      || JSON.stringify(savedBlueprint.bp) !== JSON.stringify(finalBlueprint)
+      || secondChecking !== (activeModule?.stats.secondChecking ?? "required");
+  }, [savedBlueprint, caComponents, finalBlueprint, secondChecking, activeModule?.stats.secondChecking]);
 
   const visibleStudents = useMemo(() => {
     const term = searchTerm.trim().toUpperCase();
@@ -447,6 +453,7 @@ export default function LecturerConsolePage() {
           isAbsentTheory: absence.isAbsentTheory,
           isAbsentPractical: absence.isAbsentPractical,
           isAbsentFinal: absence.isAbsentFinal,
+          isAbsentCa: Object.values(row.isAbsentCa ?? {}).some(value => value === true),
           examTotal: hasExamMarks ? examinerTotals.rawTotal : null,
           variance,
           varianceFlagged: variance !== null && variance > VARIANCE_THRESHOLD,
@@ -612,10 +619,10 @@ export default function LecturerConsolePage() {
   const patchFinalSection = (
     sectionKey: FinalSectionKey,
     update: (section: FinalSectionBlueprint) => FinalSectionBlueprint
-  ) => setFinalBlueprint(previous => sectionKey === "practical"
+  ) => setFinalBlueprint(previous => normaliseFinalBlueprint(sectionKey === "practical"
     ? { ...previous, practical: update(previous.practical) }
     : { ...previous, theory: { ...previous.theory, [sectionKey]: update(previous.theory[sectionKey]) } }
-  );
+  ));
 
   const updateFinalQuestionCount = (sectionKey: FinalSectionKey, raw: string) => {
     const count = Math.max(0, Math.min(50, Math.floor(Number(raw) || 0)));
@@ -636,6 +643,9 @@ export default function LecturerConsolePage() {
   const updateFinalQuestionMax = (sectionKey: FinalSectionKey, questionIndex: number, raw: string) => {
     patchFinalSection(sectionKey, section => ({
       ...section,
+      ...(sectionKey === "mcq" ? { individualMaxMarks: {
+        ...section.individualMaxMarks, [section.questions[questionIndex].id]: Math.max(0, Number(raw) || 0),
+      } } : {}),
       questions: section.questions.map((question, index) => index === questionIndex
         ? { ...question, maxMarks: Math.max(0, Number(raw) || 0) }
         : question
@@ -670,7 +680,7 @@ export default function LecturerConsolePage() {
       const res = await fetch("/api/lecturer/modules", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ moduleCode: activeModule.code, caComponents, finalBlueprint }),
+        body: JSON.stringify({ moduleCode: activeModule.code, caComponents, finalBlueprint, secondChecking }),
       });
       const result = await res.json();
       if (res.ok) {
@@ -1015,10 +1025,10 @@ export default function LecturerConsolePage() {
 
   /**
    * The bottom "Send to…" menu addresses one and the same submission — the
-   * marksheet moves to SECOND_CHECKING either way — but records who it was
-   * sent to, so the audit trail shows whether Faculty or the HOD was asked.
+   * marksheet moves to SECOND_CHECKING for all three recipients and records
+   * whether Faculty, the HOD, or the Second Examiner was asked.
    */
-  const handleSubmitForReview = (recipient: "FACULTY" | "HOD") => {
+  const handleSubmitForReview = (recipient: "FACULTY" | "HOD" | "SECOND_EXAMINER") => {
     if (!activeModule) return;
 
     if (errors.length > 0) {
@@ -1031,17 +1041,18 @@ export default function LecturerConsolePage() {
     }
 
     const toFaculty = recipient === "FACULTY";
+    const recipientLabel = recipient === "SECOND_EXAMINER" ? "the Second Examiner" : toFaculty ? "Faculty" : "the HOD";
     const eligibleCount = students.filter(row => isRowEligible(row)).length;
 
     setConfirmState({
-      title: toFaculty ? "Send this marksheet to Faculty?" : "Send this marksheet to the HOD?",
+      title: `Send this marksheet to ${recipientLabel}?`,
       tone: "primary",
-      confirmLabel: toFaculty ? "Send to Faculty" : "Send to HOD",
+      confirmLabel: `Send to ${recipientLabel}`,
       body: (
         <>
           <p>
             {eligibleCount} eligible student row(s) will be submitted for second checking
-            {toFaculty
+            {recipient !== "HOD"
               ? " — the Second Examiner independently marks the final paper."
               : " — the Head of Department receives the submission for review."}
           </p>
@@ -1081,7 +1092,7 @@ export default function LecturerConsolePage() {
           setActiveModule(prev => prev ? { ...prev, stats: nextStats } : null);
           setFeedback({
             type: "success",
-            text: toFaculty
+            text: recipient === "SECOND_EXAMINER" ? "Marksheet sent to the Second Examiner for second marking." : toFaculty
               ? "Marksheet sent to Faculty for second checking by the Examiner."
               : "Marksheet sent to the HOD for review.",
           });
@@ -1335,7 +1346,25 @@ export default function LecturerConsolePage() {
             </label>
           )}
         </div>
-        {section.questions.length > 0 ? (
+        {isMcq && (
+          <fieldset className="space-y-2">
+            <legend className="text-xs font-bold">Individual MCQ weighting</legend>
+            {(["individual", "common"] as const).map(mode => (
+              <button key={mode} type="button" aria-pressed={(section.weightingMode ?? "individual") === mode}
+                onClick={() => patchFinalSection("mcq", current => ({ ...current, weightingMode: mode, questions: current.questions.map(q => ({ ...q, maxMarks: mode === "individual" ? current.individualMaxMarks?.[q.id] ?? q.maxMarks : q.maxMarks })) }))}
+                className={`mr-2 rounded-lg border px-3 py-2 text-xs font-bold ${(section.weightingMode ?? "individual") === mode ? "bg-sky-700 text-white" : "bg-white"}`}>
+                {mode === "individual" ? "Enable · Individual weights" : "Disable · Common weight"}
+              </button>
+            ))}
+          </fieldset>
+        )}
+        {isMcq && section.weightingMode === "common" ? (
+          <label className="block text-xs font-bold">Common weight (applies to all {section.questions.length} questions)
+            <input type="number" min="0" step="any" value={section.commonMaxMarks ?? 10}
+              onChange={event => patchFinalSection("mcq", current => ({ ...current, commonMaxMarks: Math.max(0, Number(event.target.value) || 0) }))}
+              className="mt-1 w-full rounded-lg border bg-white px-3 py-2" />
+          </label>
+        ) : section.questions.length > 0 ? (
           <div className="overflow-hidden rounded-xl border border-white/80 bg-white">
             <div className="flex flex-wrap items-center gap-2 border-b border-neutral-100 bg-neutral-50/80 px-3 py-2">
               <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
@@ -1407,7 +1436,7 @@ export default function LecturerConsolePage() {
   };
 
   // ── Loading screen ─────────────────────────────────────────────────────────
-  if (isAuthLoading || (isModulesLoading && !!user?.email)) {
+  if (isAuthLoading || (isActiveLec && isModulesLoading && !!user?.email)) {
     return (
       <div className="min-h-screen bg-cream-canvas flex flex-col items-center justify-center gap-4">
         <Loader2 className="h-8 w-8 text-indigo-600 animate-spin" />
@@ -1426,7 +1455,7 @@ export default function LecturerConsolePage() {
               <img src="/wusl-logo.png" alt="Wayamba University" className="w-10 h-10 object-contain" />
               <div>
                 <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Student Exam &amp; Results Management</p>
-                <h1 className="text-sm font-black text-[#1a1a1a] leading-none">Lecturer Workspace</h1>
+                <h1 className="text-sm font-black text-[#1a1a1a] leading-none">First Examiner (Module Lecturer)</h1>
               </div>
             </div>
             <button onClick={logout} className="text-xs font-semibold text-rose-600 hover:underline cursor-pointer">
@@ -1478,7 +1507,7 @@ export default function LecturerConsolePage() {
     ? " The marksheet is with the Examiner — recall it before making corrections."
     : " When every eligible row is complete, use "}
   {!isSecondChecking && <strong>Send to…</strong>}
-  {!isSecondChecking && " to submit it to Faculty or the HOD."}
+  {!isSecondChecking && " to submit it to Faculty, the HOD, or the Second Examiner."}
       </div>
       <div className="flex flex-wrap gap-2">
         <button
@@ -1514,6 +1543,13 @@ export default function LecturerConsolePage() {
                   <p className="px-3 pt-1.5 pb-1 text-[9px] font-black uppercase tracking-wider text-neutral-400">
                     Submit this marksheet to
                   </p>
+                  <button
+                    onClick={() => { setIsSendMenuOpen(false); handleSubmitForReview("SECOND_EXAMINER"); }}
+                    className="w-full px-3 py-2.5 rounded-lg hover:bg-indigo-50 text-left cursor-pointer"
+                  >
+                    <span className="block text-xs font-bold">Send to Second Examiner</span>
+                    <span className="block text-[10px] text-neutral-500">Hand over final marks for corrections and second marking.</span>
+                  </button>
                   <button
                     onClick={() => { setIsSendMenuOpen(false); handleSubmitForReview("FACULTY"); }}
                     className="w-full flex items-start gap-2.5 px-3 py-2.5 rounded-lg hover:bg-indigo-50 text-left cursor-pointer transition-colors"
@@ -1577,7 +1613,7 @@ export default function LecturerConsolePage() {
             <img src="/wusl-logo.png" alt="Wayamba University" className="w-10 h-10 object-contain" />
             <div>
               <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Student Exam &amp; Results Management</p>
-              <h1 className="text-sm font-black text-[#1a1a1a] leading-none">Lecturer Workspace</h1>
+              <h1 className="text-sm font-black text-[#1a1a1a] leading-none">First Examiner (Module Lecturer)</h1>
             </div>
           </div>
 
@@ -1795,8 +1831,8 @@ export default function LecturerConsolePage() {
                     <div>
                       <p className="font-bold text-indigo-800">Submitted for second checking.</p>
                       <p className="text-indigo-600 mt-0.5 leading-relaxed">
-                        The Examiner is independently marking the final paper. Marks remain editable, but recall the
-                        submission if you need to correct something significant.
+                        The Second Examiner is checking the final paper. Your marks are read-only; recall the
+                        submission before making corrections.
                       </p>
                     </div>
                   </div>
@@ -1957,6 +1993,12 @@ export default function LecturerConsolePage() {
                   </div>
 
                   <div className="p-6 space-y-6">
+                    <label className="block text-xs font-bold">Second-examiner check (workflow statement)
+                      <select value={secondChecking} onChange={event => setSecondChecking(event.target.value as "required" | "optional")} className="ml-2 rounded border bg-white p-2">
+                        <option value="required">Required</option><option value="optional">Optional</option>
+                      </select>
+                      <span className="block text-[10px] font-normal">Visible to the HOD. This statement does not bypass handover or reconciliation.</span>
+                    </label>
 
                     {/* ── CA Setup Tab ─────────────────────────────────────── */}
                     {bpTab === "ca" && (
@@ -2759,6 +2801,12 @@ export default function LecturerConsolePage() {
                     {/* ── Section summary grid; question marks open in section dialogs ── */}
                     {marksTab === "final_marks" && (
                       <div>
+                        <div className="mb-3 text-xs text-neutral-600 space-y-1">
+                          <h3 className="font-black">Final Paper Marks Ledger · First Examiner (Module Lecturer)</h3>
+                          {activeModule?.stats.submittedAt && <p>Sent to {activeModule.stats.submittedTo === "SECOND_EXAMINER" ? "Second Examiner" : activeModule.stats.submittedTo ?? "second checking"} · {new Date(activeModule.stats.submittedAt).toLocaleString()}</p>}
+                          {activeModule?.stats.recalledAt && <p>Last recalled · {new Date(activeModule.stats.recalledAt).toLocaleString()}</p>}
+                          {showComparison && <p>Second Examiner corrections appear in rose; hover for original marks.</p>}
+                        </div>
                         {!finalBlueprint.enabled ? (
                           <p className="py-8 text-center text-sm italic text-neutral-500">The Final Paper is not enabled. Configure it in the Blueprint Setup tab.</p>
                         ) : (
@@ -2817,11 +2865,11 @@ export default function LecturerConsolePage() {
                                         </th>
                                       )}
                                       <th rowSpan={2} className="px-3 py-3 text-center bg-emerald-100 text-emerald-900 min-w-36">
-                                        Lecturer total
+                                        First Examiner total
                                         <span className="block text-[10px] font-semibold normal-case tracking-normal text-emerald-800">out of {finalBlueprint.weightage}</span>
                                       </th>
                                       {showComparison && (
-                                        <th colSpan={2} className="px-3 py-3 text-center bg-orange-100 text-orange-900">
+                                        <th colSpan={2 + finalSections.reduce((sum, section) => sum + section.blueprint.questions.length, 0)} className="px-3 py-3 text-center bg-orange-100 text-orange-900">
                                           2nd Examiner Review
                                         </th>
                                       )}
@@ -2848,6 +2896,9 @@ export default function LecturerConsolePage() {
                                       ))}
                                       {showComparison && (
                                         <>
+                                          {finalSections.flatMap(section => section.blueprint.questions.map(question => (
+                                            <th key={`${section.key}-${question.id}`} className="px-3 py-3 bg-orange-50 text-orange-800 text-center whitespace-nowrap">{section.label} · {question.id}</th>
+                                          )))}
                                           <th className="px-3 py-3 text-center bg-orange-50 text-orange-800 min-w-36">
                                             Weighted total
                                             <span className="block text-[9px] font-semibold normal-case text-orange-700">out of {finalBlueprint.weightage}</span>
@@ -2973,6 +3024,16 @@ export default function LecturerConsolePage() {
                                           </td>
                                           {showComparison && (
                                             <>
+                                              {finalSections.flatMap(section => section.blueprint.questions.map(question => {
+                                                const first = getFinalSectionMarks(marks, section.key)[question.id];
+                                                const second = getFinalSectionMarks(secondMarks, section.key)[question.id];
+                                                const absent = section.parent === "theory" ? absence.isAbsentTheory : absence.isAbsentPractical;
+                                                const edited = isEditedMark(first, second);
+                                                return <td key={`${section.key}-${question.id}`} title={edited ? `was ${first ?? "not entered"}` : "Unchanged"}
+                                                  className={`px-3 py-2 text-center font-bold ${edited ? "text-rose-700 bg-rose-100" : "bg-orange-50/40 text-orange-900"}`}>
+                                                  {!eligible ? "—" : absent ? "AB" : typeof second !== "number" ? "—" : second.toFixed(2)}
+                                                </td>;
+                                              }))}
                                               <td className="bg-orange-50/40 px-3 py-2 text-center font-bold text-orange-900 tabular-nums">
                                                 {!eligible ? "—" : absence.isAbsentFinal ? "AB" : hasSecondMarks ? (
                                                   <>

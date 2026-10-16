@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { gradeForMark, roundUpWhole } from "@/lib/grading";
 import { CheckCircle2, Download, TriangleAlert, X } from "lucide-react";
 
 export interface MarksheetSummaryRow {
@@ -18,6 +19,7 @@ export interface MarksheetSummaryRow {
   isAbsentTheory: boolean;
   isAbsentPractical: boolean;
   isAbsentFinal: boolean;
+  isAbsentCa?: boolean;
   /** Second Examiner's raw final total (only shown after second checking). */
   examTotal?: number | null;
   /** Absolute difference between the two final-paper totals. */
@@ -39,7 +41,7 @@ export interface MarksheetSummaryProps {
 }
 
 function scoreTone(total: number): string {
-  if (total >= 75) return "text-emerald-700 bg-emerald-50 border-emerald-100";
+  if (total >= 70) return "text-emerald-700 bg-emerald-50 border-emerald-100";
   if (total >= 40) return "text-indigo-700 bg-indigo-50 border-indigo-100";
   return "text-rose-700 bg-rose-50 border-rose-100";
 }
@@ -47,8 +49,7 @@ function scoreTone(total: number): string {
 /**
  * Computed overview of the marksheet: each student's weighted CA / final / module
  * mark derived from the module's own blueprint, plus completeness and any
- * variance against the Second Examiner. No grades are assigned here — the
- * weighting is pure arithmetic on the blueprint the lecturer configured.
+ * variance against the Second Examiner. Grades use raw module marks; displayed module marks round up to whole values.
  */
 export function MarksheetSummary({
   rows,
@@ -61,7 +62,7 @@ export function MarksheetSummary({
   const completeCount = rows.filter(row => row.progress === 100).length;
   const flaggedCount = rows.filter(row => row.varianceFlagged).length;
   const average = rows.length > 0
-    ? Math.round((rows.reduce((sum, row) => sum + row.total, 0) / rows.length) * 10) / 10
+    ? rows.reduce((sum, row) => sum + row.total, 0) / rows.length
     : 0;
 
   return (
@@ -81,7 +82,7 @@ export function MarksheetSummary({
             {completeCount}/{rows.length} complete
           </span>
           <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
-            Average {average.toFixed(1)}/100
+            Average {average.toFixed(2)}/100
           </span>
           {excludedCount > 0 && (
             <span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-500" title="Ineligible students are excluded from these figures">
@@ -125,6 +126,7 @@ export function MarksheetSummary({
               <th className="px-4 py-3 text-center">CA ({rows[0]?.caMax ?? 0}%)</th>
               <th className="px-4 py-3 text-center">Final ({rows[0]?.finalMax ?? 0}%)</th>
               <th className="px-4 py-3 text-center">Module Mark</th>
+              <th className="px-4 py-3 text-center">Grade</th>
               {showComparison && (
                 <>
                   <th className="px-4 py-3 text-center bg-amber-50/60 text-amber-700">2nd Final raw</th>
@@ -160,23 +162,26 @@ export function MarksheetSummary({
                     </span>
                   </div>
                 </td>
-                <td className="px-4 py-2.5 text-center font-bold text-neutral-700">{row.ca.toFixed(1)}</td>
+                <td className="px-4 py-2.5 text-center font-bold text-neutral-700">{row.ca.toFixed(2)}</td>
                 <td className="px-4 py-2.5 text-center font-bold text-neutral-700">
                   {row.isAbsentFinal ? <span className="text-neutral-300">—</span> : (
-                    <span>{row.final.toFixed(1)}{(row.isAbsentTheory || row.isAbsentPractical) && <span className="ml-1 text-[9px] font-bold text-rose-500">partial AB</span>}</span>
+                    <span>{row.final.toFixed(2)}{(row.isAbsentTheory || row.isAbsentPractical) && <span className="ml-1 text-[9px] font-bold text-rose-500">partial AB</span>}</span>
                   )}
                 </td>
                 <td className="px-4 py-2.5 text-center">
                   <span className={`inline-block min-w-[3.25rem] px-2 py-0.5 rounded-lg border font-extrabold ${scoreTone(row.total)}`}>
-                    {row.total.toFixed(1)}
+                    {roundUpWhole(row.total)}
                   </span>
+                </td>
+                <td className="px-4 py-2.5 text-center font-black" title="Grade uses the raw mark, before display rounding">
+                  {gradeForMark(row.total, { incomplete: row.isAbsentCa || row.isAbsentTheory || row.isAbsentPractical || row.isAbsentFinal }).grade}
                 </td>
                 {showComparison && (
                   <>
                     <td className="px-4 py-2.5 text-center font-bold text-amber-700 bg-amber-50/20">
                       {row.examTotal === null || row.examTotal === undefined
                         ? <span className="text-neutral-300">—</span>
-                        : row.examTotal.toFixed(1)}
+                        : row.examTotal.toFixed(2)}
                     </td>
                     <td className="px-4 py-2.5 text-center bg-rose-50/20">
                       {row.variance === null || row.variance === undefined ? (
@@ -184,10 +189,10 @@ export function MarksheetSummary({
                       ) : row.varianceFlagged ? (
                         <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-100 px-2 py-0.5 rounded-full">
                           <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse inline-block" />
-                          {row.variance.toFixed(1)}
+                          {row.variance.toFixed(2)}
                         </span>
                       ) : (
-                        <span className="text-[10px] font-bold text-emerald-600">{row.variance.toFixed(1)}</span>
+                        <span className="text-[10px] font-bold text-emerald-600">{row.variance.toFixed(2)}</span>
                       )}
                     </td>
                   </>
@@ -205,7 +210,7 @@ export function MarksheetSummary({
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={showComparison ? 9 : 7} className="px-4 py-8 text-center text-neutral-400 italic">
+                <td colSpan={showComparison ? 10 : 8} className="px-4 py-8 text-center text-neutral-400 italic">
                   No students in this marksheet yet.
                 </td>
               </tr>
@@ -215,7 +220,7 @@ export function MarksheetSummary({
       </div>
 
       <div className="px-5 py-2.5 bg-neutral-50/60 border-t border-neutral-200 text-[10px] text-neutral-400 font-medium">
-        Module mark = Σ (marks obtained ÷ marks obtainable × weightage) from the blueprint of <span className="font-bold text-neutral-500">{moduleName}</span>.
+        Grades use the raw mark; displayed module marks round up. Module mark = Σ (marks obtained ÷ marks obtainable × weightage) from the blueprint of <span className="font-bold text-neutral-500">{moduleName}</span>.
       </div>
     </div>
   );

@@ -1,9 +1,11 @@
 "use client";
 
+import { hasExaminerHandover, isEditedMark } from "@/lib/second-examiner";
 import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
+import RoleGuard from "@/components/layout/RoleGuard";
 import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import {
   ShieldCheck, BookOpen, Save, Loader2, AlertCircle, CheckCircle2,
@@ -36,13 +38,17 @@ interface ExamModule {
 }
 
 export default function ExaminerConsolePage() {
+  return <RoleGuard requiredCapability="isExamLec"><ExaminerConsole /></RoleGuard>;
+}
+
+function ExaminerConsole() {
   const router = useRouter();
   const { user } = useRequireAuth();
   const { logout } = useAuth();
 
   const [modules, setModules] = useState<ExamModule[]>([]);
   const [activeModule, setActiveModule] = useState<ExamModule | null>(null);
-  const [students, setStudents] = useState<StudentMarkRecord[]>([]);
+  const [students, setStudents] = useState<Omit<StudentMarkRecord, "caQuestionsMarks" | "isAbsentCa">[]>([]);
 
   const [isPageLoading, setIsPageLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -128,9 +134,9 @@ export default function ExaminerConsolePage() {
     }));
   };
 
-  const totalForMarks = (student: StudentMarkRecord, marks: unknown) =>
+  const totalForMarks = (student: Omit<StudentMarkRecord, "caQuestionsMarks" | "isAbsentCa">, marks: unknown) =>
     computeFinalPaperTotals(student, finalBp, marks).rawTotal;
-  const weightedTotalForMarks = (student: StudentMarkRecord, marks: unknown) =>
+  const weightedTotalForMarks = (student: Omit<StudentMarkRecord, "caQuestionsMarks" | "isAbsentCa">, marks: unknown) =>
     computeFinalPaperTotals(student, finalBp, marks).weighted;
 
   // ── Stats ──────────────────────────────────────────────────────────────────
@@ -144,14 +150,15 @@ export default function ExaminerConsolePage() {
     return Math.abs(lecturerTotal - examinerTotal) > VARIANCE_THRESHOLD;
   });
 
-  const moduleStatus = (activeModule?.stats as any)?.marksheetStatus as string | undefined;
+  const moduleStatus = activeModule?.stats.marksheetStatus;
+  const handedOver = hasExaminerHandover(moduleStatus);
   const isFinalized = moduleStatus === "FINALIZED";
   const isReconciliationNeeded = moduleStatus === "RECONCILIATION_NEEDED";
   const isReconciled = moduleStatus === "RECONCILED";
   const isLecturerApproved = (activeModule?.stats as any)?.lecturerApproved === true;
 
   const handleSave = async (finalize = false) => {
-    if (!activeModule) return;
+    if (!activeModule || !handedOver || moduleStatus !== "SECOND_CHECKING") return;
     setIsSaving(true);
     setFeedback(null);
     try {
@@ -175,13 +182,13 @@ export default function ExaminerConsolePage() {
         if (finalize) {
           if (result.requiresReconciliation) {
             // Variance detected — needs Lecturer approval before finalising
-            const msg = `${flaggedStudents.length} student(s) have a mark variance > ${VARIANCE_THRESHOLD}. The Active Lecturer has been notified and must approve before you can finalise.`;
+            const msg = `${flaggedStudents.length} student(s) have a mark variance > ${VARIANCE_THRESHOLD}. The First Examiner has been notified and must approve before you can finalise.`;
             setFeedback({ type: "error", text: msg });
             const newStats = { ...(activeModule.stats as any), marksheetStatus: "RECONCILIATION_NEEDED", lecturerApproved: false };
             setModules(prev => prev.map(m => m.code === activeModule.code ? { ...m, stats: newStats } : m));
             setActiveModule(prev => prev ? { ...prev, stats: newStats } : null);
           } else {
-            setFeedback({ type: "success", text: "Marking finalised. The Active Lecturer can now see your marks for comparison." });
+            setFeedback({ type: "success", text: "Marking finalised. The First Examiner can now see your marks for comparison." });
             const newStats = { ...(activeModule.stats as any), marksheetStatus: "FINALIZED" };
             setModules(prev => prev.map(m => m.code === activeModule.code ? { ...m, stats: newStats } : m));
             setActiveModule(prev => prev ? { ...prev, stats: newStats } : null);
@@ -310,9 +317,9 @@ export default function ExaminerConsolePage() {
           <div>
             <p className="text-xs font-bold text-amber-800">Second Examiner Access</p>
             <p className="text-[11px] text-amber-700 mt-0.5">
-              You can enter your own independent marks for each student&apos;s final exam.
-              The active lecturer&apos;s marks are shown as a <strong>guided reference</strong>.
-              Your marks will only be visible to the active lecturer after you click <strong>Finalize Marking</strong>.
+              After handover, check and correct the First Examiner&apos;s final-paper marks. Originals are preserved.
+              The First Examiner&apos;s marks are shown as a <strong>guided reference</strong>.
+              Your marks will only be visible to the First Examiner after you click <strong>Finalize Marking</strong>.
             </p>
           </div>
         </div>
@@ -347,7 +354,7 @@ export default function ExaminerConsolePage() {
               <button
                 onClick={() => setShowActiveLecMarks(v => !v)}
                 className={`p-2.5 rounded-lg transition-all cursor-pointer ${showActiveLecMarks ? "bg-indigo-100 text-indigo-700" : "bg-neutral-100 text-neutral-400"}`}
-                title={showActiveLecMarks ? "Hide active lecturer marks" : "Show active lecturer marks"}
+                title={showActiveLecMarks ? "Hide First Examiner marks" : "Show First Examiner marks"}
               >
                 {showActiveLecMarks ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
               </button>
@@ -442,10 +449,16 @@ export default function ExaminerConsolePage() {
                     </div>
                   )}
 
+                  {!handedOver && (
+                    <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-800">
+                      Awaiting handover from the First Examiner. Second marking is read-only until the marksheet is sent for second checking.
+                    </p>
+                  )}
+                  <p className="text-xs text-neutral-500">Rose cells are corrections to the First Examiner&apos;s marks; hover to see the original value.</p>
                   {students.length === 0 ? (
                     <div className="border-2 border-dashed border-neutral-200 rounded-xl p-10 text-center text-sm text-neutral-400 italic">
                       No student mark records found for this module.<br />
-                      <span className="text-xs">The active lecturer must save marks first.</span>
+                      <span className="text-xs">The First Examiner must save marks first.</span>
                     </div>
                   ) : (
                     <div className="border border-neutral-200 rounded-xl overflow-auto">
@@ -477,10 +490,10 @@ export default function ExaminerConsolePage() {
                                     <>
                                       {section.blueprint.questions.map(question => (
                                         <th key={`lec-${section.key}-${question.id}`} className="px-2 py-2 bg-indigo-50/60 text-indigo-700">
-                                          <span className="block text-[8px] font-normal text-indigo-400">Lec</span>{question.id}<span className="block text-[9px] font-normal text-neutral-400">/{question.maxMarks}</span>
+                                          <span className="block text-[8px] font-normal text-indigo-400">1st</span>{question.id}<span className="block text-[9px] font-normal text-neutral-400">/{question.maxMarks}</span>
                                         </th>
                                       ))}
-                                      <th className="px-3 py-2 bg-indigo-100/60 text-indigo-700">Lec total</th>
+                                      <th className="px-3 py-2 bg-indigo-100/60 text-indigo-700">First Examiner total</th>
                                     </>
                                   )}
                                   {section.blueprint.questions.map(question => (
@@ -504,11 +517,18 @@ export default function ExaminerConsolePage() {
                                 ? Math.abs(weightedTotalForMarks(student, student.finalExamQuestionsMarks) - weightedTotalForMarks(student, student.secondExamMarks))
                                 : null;
                               const flagged = variance !== null && variance > VARIANCE_THRESHOLD;
+                              const editedCount = finalSections.reduce((count, section) => {
+                                const first = getFinalSectionMarks(student.finalExamQuestionsMarks, section.key);
+                                const second = getFinalSectionMarks(student.secondExamMarks, section.key);
+                                return count + section.blueprint.questions.filter(q => isEditedMark(first[q.id], second[q.id])).length;
+                              }, 0);
 
                               return (
                                 <tr key={student.studentIndex} className={`transition-colors ${wholePaperAbsent ? "bg-neutral-100/60 text-neutral-400" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/30"}`}>
                                   <td className="px-4 py-3 font-bold text-neutral-400">{index + 1}</td>
-                                  <td className="px-4 py-3 font-bold tracking-wider uppercase">{student.studentIndex}</td>
+                                  <td className="px-4 py-3 font-bold tracking-wider uppercase">{student.studentIndex}
+                                    {editedCount > 0 && <span className="block text-[9px] text-rose-700">edited {editedCount} question(s)</span>}
+                                  </td>
                                   <td className="px-3 py-3 text-center whitespace-nowrap">
                                     <div className="flex flex-wrap justify-center gap-1">
                                       {absence.isAbsentTheory
@@ -559,9 +579,10 @@ export default function ExaminerConsolePage() {
                                                 value={examinerMarks[question.id] ?? ""}
                                                 placeholder="—"
                                                 aria-label={`${student.studentIndex} ${section.label} ${question.id} out of ${question.maxMarks}`}
-                                                disabled={activeModule.isFrozen || isFinalized || isReconciliationNeeded || isReconciled || sectionAbsent}
+                                                disabled={!handedOver || activeModule.isFrozen || isFinalized || isReconciliationNeeded || isReconciled || sectionAbsent}
                                                 onChange={event => updateSecondMark(student.studentIndex, section.key, question.id, event.target.value)}
-                                                className="w-14 bg-white border border-amber-200 rounded py-1 text-center font-bold focus:outline-none focus:border-amber-500 disabled:opacity-40"
+                                                title={isEditedMark(lecturerMarks[question.id], examinerMarks[question.id]) ? `was ${lecturerMarks[question.id] ?? "not entered"}` : "Unchanged First Examiner mark"}
+                                                className={`w-14 border rounded py-1 text-center font-bold focus:outline-none focus:border-amber-500 disabled:opacity-40 ${isEditedMark(lecturerMarks[question.id], examinerMarks[question.id]) ? "text-rose-700 bg-rose-100 border-rose-200" : "bg-white border-amber-200"}`}
                                               />
                                             )}
                                           </td>
@@ -592,7 +613,7 @@ export default function ExaminerConsolePage() {
                   )}
 
                   {/* ── Action footer ─────────────────────────────────────── */}
-                  {students.length > 0 && !activeModule.isFrozen && !isFinalized && !isReconciliationNeeded && !isReconciled && (
+                  {students.length > 0 && handedOver && !activeModule.isFrozen && !isFinalized && !isReconciliationNeeded && !isReconciled && (
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-3 border-t border-neutral-100">
                       <p className="text-[11px] text-neutral-400 max-w-sm">
                         <strong>Save Progress</strong> to preserve your marks. Click <strong>Finalise Marking</strong> when complete —
@@ -627,7 +648,7 @@ export default function ExaminerConsolePage() {
                           <div className="flex items-start gap-2.5">
                             <CheckCircle2 className="h-4 w-4 text-teal-600 shrink-0 mt-0.5" />
                             <p className="text-[11px] text-teal-700 font-semibold">
-                              The Active Lecturer has reviewed and approved your marksheet. You may now finalise the reconciliation.
+                              The First Examiner has reviewed and approved your marksheet. You may now finalise the reconciliation.
                             </p>
                           </div>
                           <button
@@ -643,9 +664,9 @@ export default function ExaminerConsolePage() {
                         <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start gap-2.5">
                           <Clock className="h-4 w-4 text-orange-500 shrink-0 mt-0.5" />
                           <div>
-                            <p className="text-[11px] font-bold text-orange-800">Awaiting Lecturer Approval</p>
+                            <p className="text-[11px] font-bold text-orange-800">Awaiting First Examiner Approval</p>
                             <p className="text-[10px] text-orange-600 mt-0.5">
-                              {flaggedStudents.length} student(s) have a variance &gt; {VARIANCE_THRESHOLD}. The Active Lecturer has been notified and must review and approve your marksheet before you can finalise.
+                              {flaggedStudents.length} student(s) have a variance &gt; {VARIANCE_THRESHOLD}. The First Examiner has been notified and must review and approve your marksheet before you can finalise.
                             </p>
                           </div>
                         </div>
@@ -657,7 +678,7 @@ export default function ExaminerConsolePage() {
                     <div className="flex items-center gap-2.5 pt-3 border-t border-neutral-100">
                       <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
                       <p className="text-[11px] text-emerald-700 font-semibold">
-                        Second marking is finalised. The Active Lecturer can now view your marks for variance analysis.
+                        Second marking is finalised. The First Examiner can now view your marks for variance analysis.
                       </p>
                     </div>
                   )}

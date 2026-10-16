@@ -166,8 +166,8 @@ export function ProfileSettingsDrawer({ isOpen, onClose }: ProfileSettingsDrawer
                   <div className="flex flex-wrap gap-1.5">
                     {user?.role === "ADMIN" && <span className="bg-rose-50 text-rose-700 border border-rose-200 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-wide">System Admin</span>}
                     {user?.capabilities.isHOD && <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-wide">HOD</span>}
-                    {user?.capabilities.isActiveLec && <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-wide">Active Lecturer</span>}
-                    {user?.capabilities.isExamLec && <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-wide">Examiner</span>}
+                    {user?.capabilities.isActiveLec && <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-wide">First Examiner (Module Lecturer)</span>}
+                    {user?.capabilities.isExamLec && <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[9px] font-bold px-2 py-0.5 rounded uppercase tracking-wide">Second Examiner</span>}
                   </div>
                 </div>
 
