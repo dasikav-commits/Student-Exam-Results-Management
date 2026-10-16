@@ -1,12 +1,20 @@
 "use client";
 
+import { gradeForMark, hasGradeAbsence, roundUpWhole } from "@/lib/grading";
+import { isEditedMark } from "@/lib/second-examiner";
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
+import RoleGuard from "@/components/layout/RoleGuard";
 import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import {
   computeWeightedScores,
+  computeFinalPaperTotals,
+  computeFinalSectionTotal,
+  getFinalPaperSections,
+  getFinalSectionMarks,
+  normaliseFinalMarks,
   hasAnyMark,
   normaliseCaComponents,
   normaliseFinalAbsence,
@@ -57,6 +65,10 @@ interface ModuleData {
     finalBlueprint?: HodFinalBlueprint;
     caCompletionRate?: number;
     marksheetStatus?: MarksheetStatus;
+    secondChecking?: "required" | "optional";
+    submittedTo?: "FACULTY" | "HOD" | "SECOND_EXAMINER";
+    submittedAt?: string;
+    recalledAt?: string;
   };
 }
 
@@ -68,7 +80,7 @@ interface ModuleData {
  * components (project / presentation / lab report) and for any question whose
  * weightage differed from the component average.
  *
- * The Examiner's marks take precedence over the lecturer's for the final paper.
+ * The Second Examiner's marks take precedence over the First Examiner's for the final paper.
  */
 function calcStudentTotal(
   student: any,
@@ -109,6 +121,10 @@ function StatusBadge({ status }: { status?: MarksheetStatus }) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function HodConsolePage() {
+  return <RoleGuard requiredCapability="isHOD"><HodConsole /></RoleGuard>;
+}
+
+function HodConsole() {
   const router = useRouter();
   const { user } = useRequireAuth();   // ← redirects to /login if no session
   const { logout } = useAuth();
@@ -1115,6 +1131,12 @@ export default function HodConsolePage() {
                   )}
                 </p>
               </div>
+              <div className="text-[10px] text-neutral-600 space-y-1">
+                <p className="font-bold">Second-examiner check: {viewResultsModule.stats.secondChecking ?? "required"}</p>
+                {viewResultsModule.stats.submittedAt && <p>Sent to {viewResultsModule.stats.submittedTo === "SECOND_EXAMINER" ? "Second Examiner" : viewResultsModule.stats.submittedTo ?? "second checking"} · {new Date(viewResultsModule.stats.submittedAt).toLocaleString()}</p>}
+                {viewResultsModule.stats.recalledAt && <p>Last recalled · {new Date(viewResultsModule.stats.recalledAt).toLocaleString()}</p>}
+                <p>Second Examiner marks take precedence. Rose cells indicate edits. Grades use raw marks; Grand Total rounds up.</p>
+              </div>
               <button onClick={() => { setViewResultsModule(null); setModuleStudents([]); }} className="w-8 h-8 rounded-full border border-neutral-200 flex items-center justify-center hover:bg-neutral-100 cursor-pointer">
                 <X className="h-4 w-4 text-neutral-500" />
               </button>
@@ -1143,7 +1165,15 @@ export default function HodConsolePage() {
                           <span className="ml-1 font-normal normal-case">/ {viewResultsModule.stats.finalBlueprint.weightage}</span>
                         )}
                       </th>
+                      {getFinalPaperSections(normaliseFinalBlueprint(viewResultsModule.stats.finalBlueprint)).filter(section => section.blueprint.questions.length > 0).map(section => (
+                        <React.Fragment key={section.key}>
+                          <th className="px-4 py-3 text-right bg-indigo-50 text-indigo-700">1st · {section.label} raw</th>
+                          <th className="px-4 py-3 text-right bg-amber-50 text-amber-700">2nd · {section.label} raw</th>
+                        </React.Fragment>
+                      ))}
+                      <th className="px-4 py-3 text-right">Δ Weighted</th>
                       <th className="px-4 py-3 text-right bg-indigo-50 text-indigo-700 rounded-t">Grand Total / 100</th>
+                      <th className="px-4 py-3 text-right">Grade</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100">
@@ -1167,20 +1197,41 @@ export default function HodConsolePage() {
                             </div>
                           </td>
                           <td className="px-4 py-3 text-right font-semibold tabular-nums">
-                            {caAbsent ? <span className="text-rose-400 text-[10px] font-bold">ABSENT</span> : caTotal.toFixed(1)}
+                            {caAbsent ? <span className="text-rose-400 text-[10px] font-bold">ABSENT</span> : caTotal.toFixed(2)}
                           </td>
                           <td className="px-4 py-3 text-right font-semibold tabular-nums">
                             {finalAbsence.isAbsentFinal
                               ? <span className="text-rose-400 text-[10px] font-bold">ABSENT</span>
-                              : <span>{examTotal.toFixed(1)}{(finalAbsence.isAbsentTheory || finalAbsence.isAbsentPractical) && <span className="ml-1 text-[9px] font-bold text-rose-500">partial AB</span>}</span>}
+                              : <span>{examTotal.toFixed(2)}{(finalAbsence.isAbsentTheory || finalAbsence.isAbsentPractical) && <span className="ml-1 text-[9px] font-bold text-rose-500">partial AB</span>}</span>}
                           </td>
+                          {getFinalPaperSections(normaliseFinalBlueprint(finalBlueprint)).filter(section => section.blueprint.questions.length > 0).map(section => {
+                            const bp = normaliseFinalBlueprint(finalBlueprint);
+                            const first = getFinalSectionMarks(normaliseFinalMarks(s.finalExamQuestionsMarks, bp), section.key);
+                            const second = getFinalSectionMarks(normaliseFinalMarks(s.secondExamMarks, bp), section.key);
+                            const edited = section.blueprint.questions.some(q => isEditedMark(first[q.id], second[q.id]));
+                            const absent = section.parent === "theory" ? finalAbsence.isAbsentTheory : finalAbsence.isAbsentPractical;
+                            return <React.Fragment key={section.key}>
+                              <td className="px-4 py-3 text-right bg-indigo-50/30 text-indigo-700">{absent ? "AB" : computeFinalSectionTotal(first, section.blueprint).toFixed(2)}</td>
+                              <td title={edited ? `First Examiner: ${computeFinalSectionTotal(first, section.blueprint).toFixed(2)}` : "Unchanged"}
+                                className={`px-4 py-3 text-right font-bold ${edited ? "bg-rose-100 text-rose-700" : "bg-amber-50/30 text-amber-700"}`}>
+                                {absent ? "AB" : !hasAnyMark(second) ? "—" : computeFinalSectionTotal(second, section.blueprint).toFixed(2)}
+                              </td>
+                            </React.Fragment>;
+                          })}
+                          <td className="px-4 py-3 text-right font-bold">{(() => {
+                            const bp = normaliseFinalBlueprint(finalBlueprint);
+                            if (!hasAnyMark(s.secondExamMarks)) return "—";
+                            const delta = Math.abs(computeFinalPaperTotals(s, bp).weighted - computeFinalPaperTotals(s, bp, s.secondExamMarks).weighted);
+                            return <span className={delta > 1 ? "text-rose-700" : "text-emerald-700"}>{delta.toFixed(2)}{delta > 1 ? " ⚠" : ""}</span>;
+                          })()}</td>
                           <td className={`px-4 py-3 text-right font-black tabular-nums text-sm bg-indigo-50/40 ${
-                            grandTotal >= 75 ? "text-emerald-700" :
-                            grandTotal >= 50 ? "text-amber-700" :
+                            grandTotal >= 70 ? "text-emerald-700" :
+                            grandTotal >= 40 ? "text-indigo-700" :
                             anyAbsent ? "text-rose-400" : "text-rose-700"
                           }`}>
-                            {grandTotal.toFixed(1)}
+                            {roundUpWhole(grandTotal)}
                           </td>
+                          <td className="px-4 py-3 text-right font-black">{gradeForMark(grandTotal, { incomplete: hasGradeAbsence(s) }).grade}</td>
                         </tr>
                       );
                     })}
@@ -1194,22 +1245,24 @@ export default function HodConsolePage() {
                             const caComponents = viewResultsModule.stats?.caComponents ?? [];
                             const fp = viewResultsModule.stats?.finalBlueprint;
                             return sum + calcStudentTotal(s, caComponents, fp).caTotal;
-                          }, 0) / moduleStudents.length).toFixed(1)}
+                          }, 0) / moduleStudents.length).toFixed(2)}
                         </td>
                         <td className="px-4 py-2 text-right tabular-nums">
                           {(moduleStudents.reduce((sum: number, s: any) => {
                             const caComponents = viewResultsModule.stats?.caComponents ?? [];
                             const fp = viewResultsModule.stats?.finalBlueprint;
                             return sum + calcStudentTotal(s, caComponents, fp).examTotal;
-                          }, 0) / moduleStudents.length).toFixed(1)}
+                          }, 0) / moduleStudents.length).toFixed(2)}
                         </td>
+                        <td colSpan={1 + getFinalPaperSections(normaliseFinalBlueprint(viewResultsModule.stats.finalBlueprint)).filter(section => section.blueprint.questions.length > 0).length * 2} className="px-4 py-2 text-center">—</td>
                         <td className="px-4 py-2 text-right tabular-nums bg-indigo-50/60 font-black text-indigo-800">
                           {(moduleStudents.reduce((sum: number, s: any) => {
                             const caComponents = viewResultsModule.stats?.caComponents ?? [];
                             const fp = viewResultsModule.stats?.finalBlueprint;
                             return sum + calcStudentTotal(s, caComponents, fp).grandTotal;
-                          }, 0) / moduleStudents.length).toFixed(1)}
+                          }, 0) / moduleStudents.length).toFixed(2)}
                         </td>
+                        <td className="px-4 py-2 text-right">—</td>
                       </tr>
                     </tfoot>
                   )}

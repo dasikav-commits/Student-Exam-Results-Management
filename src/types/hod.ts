@@ -56,6 +56,10 @@ export interface FinalQuestionDescriptor {
 
 export interface FinalSectionBlueprint {
   questions: FinalQuestionDescriptor[];
+  weightingMode?: "individual" | "common";
+  commonMaxMarks?: number;
+  /** Retained individual maxima while common mode overrides effective maxima. */
+  individualMaxMarks?: Record<string, number>;
   /** First N questions are required; MCQ always requires every configured question. */
   questionsToAnswer: number;
 }
@@ -113,8 +117,9 @@ export interface ModuleStats {
   lecturerApprovedAt?: string;
   /** Set when the lecturer submits the marksheet for second checking. */
   submittedAt?: string;
-  /** Who the submitted marksheet was addressed to (same submit, two addressees). */
-  submittedTo?: "FACULTY" | "HOD";
+  /** Who the submitted marksheet was addressed to (same submit, three addressees). */
+  submittedTo?: "FACULTY" | "HOD" | "SECOND_EXAMINER";
+  secondChecking?: "required" | "optional";
   /** Set when the lecturer recalls a submission back to MARKING. */
   recalledAt?: string;
   recallCount?: number;
@@ -163,9 +168,9 @@ export interface StudentMarkRecord {
   moduleCode: string;
   studentIndex: string;
   caQuestionsMarks: Record<string, Record<string, number>>;
-  /** Active Lecturer's final-paper marks, grouped by section. */
+  /** First Examiner's (Active Lecturer's) final-paper marks, grouped by section. */
   finalExamQuestionsMarks: FinalPaperMarks;
-  /** Second Examiner's independent final-paper marks, grouped by section. */
+  /** Second Examiner's marks/edits, grouped by section. */
   secondExamMarks: FinalPaperMarks;
   isAbsentCa: Record<string, boolean>;
   /** Absence is recorded at the paper-parent level; Theory covers MCQ and Essay. */

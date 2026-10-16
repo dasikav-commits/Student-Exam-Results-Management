@@ -1,3 +1,4 @@
+import { hasExaminerHandover, seedSecondExamMarks } from "@/lib/second-examiner";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
@@ -68,13 +69,21 @@ export async function GET(request: Request) {
     const finalBlueprint = normaliseFinalBlueprint(stats.finalBlueprint, stats.examTemplate);
     const marks = await prisma.studentMark.findMany({
       where: { moduleCode },
+      select: {
+        id: true, moduleCode: true, studentIndex: true,
+        finalExamQuestionsMarks: true, secondExamMarks: true,
+        isAbsentTheory: true, isAbsentPractical: true, isAbsentFinal: true, isEligible: true,
+      },
       orderBy: { studentIndex: "asc" },
     });
 
-    return NextResponse.json(marks.map(row => ({
-      ...row,
-      ...normaliseFinalMarkRow(row as unknown as MarkRowLike, finalBlueprint),
-    })));
+    return NextResponse.json(marks.map(row => {
+      const normalized = normaliseFinalMarkRow(row as unknown as MarkRowLike, finalBlueprint);
+      return {
+        ...row, ...normalized,
+        secondExamMarks: seedSecondExamMarks(normalized.finalExamQuestionsMarks, normalized.secondExamMarks),
+      };
+    }));
   } catch (error) {
     console.error("Examiner GET error:", toErrorMessage(error));
     return NextResponse.json({ error: "Failed to load examiner data" }, { status: 500 });
@@ -107,6 +116,12 @@ export async function PATCH(request: Request) {
     if (!moduleRecord) return NextResponse.json({ error: `Module '${moduleCode}' not found` }, { status: 404 });
 
     const currentStats = asModuleStats(moduleRecord.stats);
+    if (!hasExaminerHandover(currentStats.marksheetStatus)) {
+      return NextResponse.json({ error: "The First Examiner must hand over the marksheet before second marking can begin." }, { status: 409 });
+    }
+    if (moduleRecord.isFrozen || currentStats.marksheetStatus !== "SECOND_CHECKING") {
+      return NextResponse.json({ error: "Second marking is locked while frozen, finalised, or awaiting reconciliation." }, { status: 409 });
+    }
     const finalBlueprint = normaliseFinalBlueprint(currentStats.finalBlueprint, currentStats.examTemplate);
 
     // A batch transaction ensures section marks and both parent-absence flags
@@ -220,18 +235,6 @@ export async function PATCH(request: Request) {
       });
 
       return NextResponse.json({ success: true, requiresReconciliation: hasVariance, newStatus });
-    }
-
-    // Progress saves advance a submitted marksheet to SECOND_CHECKING without
-    // moving an already-finalised workflow backwards.
-    const order = ["DRAFT", "MARKING", "SECOND_CHECKING", "FINALIZED", "RECONCILIATION_NEEDED", "RECONCILED"];
-    const currentIndex = order.indexOf(currentStats.marksheetStatus ?? "DRAFT");
-    const secondCheckingIndex = order.indexOf("SECOND_CHECKING");
-    if (secondCheckingIndex > currentIndex) {
-      await prisma.module.update({
-        where: { code: moduleCode },
-        data: { stats: { ...currentStats, marksheetStatus: "SECOND_CHECKING" } },
-      });
     }
 
     return NextResponse.json({ success: true });

@@ -113,7 +113,7 @@ export async function POST(request: Request) {
     }
 
     const currentStats = asModuleStats(mod.stats);
-    if (isLecturerLocked(currentStats.marksheetStatus)) {
+    if (isLecturerLocked(currentStats.marksheetStatus) || currentStats.marksheetStatus === "SECOND_CHECKING") {
       return NextResponse.json(
         {
           error: `This marksheet is closed (${currentStats.marksheetStatus}). Marks can no longer be edited.`,

@@ -1,3 +1,4 @@
+import { gradeForMark, hasGradeAbsence, formatMark2dp, roundUpWhole } from "@/lib/grading";
 // ─────────────────────────────────────────────────────────────────────────────
 // Lecturer Desk — shared marksheet engine
 //
@@ -267,13 +268,29 @@ export function normaliseFinalBlueprint(raw: unknown, legacyTemplate?: unknown):
     const essay = theorySource.essay ?? theorySource.Essay ?? source.essay;
     const practical = source.practical ?? sections.practical;
     const mcqSection = normaliseFinalSection(mcq);
+    const mcqSource = asRecord(mcq);
+    const weightingMode = mcqSource.weightingMode === "common" ? "common" : "individual";
+    const commonMaxMarks = Math.max(0, finiteNumber(mcqSource.commonMaxMarks, mcqSection.questions[0]?.maxMarks ?? 10));
+    const storedIndividual = asRecord(mcqSource.individualMaxMarks);
+    const individualMaxMarks = Object.fromEntries(mcqSection.questions.map(question => [
+      question.id, weightingMode === "common"
+        ? Math.max(0, finiteNumber(storedIndividual[question.id], question.maxMarks))
+        : question.maxMarks,
+    ]));
     return {
       enabled: source.enabled === true,
       weightage: finiteNumber(source.weightage, 0),
       theory: {
         // MCQ is all-compulsory. Silently upgrade historical partial-answer
         // values whenever a stored blueprint is read.
-        mcq: { ...mcqSection, questionsToAnswer: mcqSection.questions.length },
+        mcq: {
+          ...mcqSection, weightingMode, commonMaxMarks, individualMaxMarks,
+          questions: mcqSection.questions.map(question => ({
+            ...question,
+            maxMarks: weightingMode === "common" ? commonMaxMarks : individualMaxMarks[question.id],
+          })),
+          questionsToAnswer: mcqSection.questions.length,
+        },
         essay: normaliseFinalSection(essay),
       },
       practical: normaliseFinalSection(practical),
@@ -698,6 +715,7 @@ export function computeFinalSectionTotal(
  * Final Paper weightage proportional to its required maximum marks. Thus the
  * weighted result is equivalent to scoring the whole paper out of its combined
  * configured maximum, while making the MCQ / Essay / Practical shares explicit.
+ * Keep full precision here: presentation rounds, but grades must use raw marks.
  */
 export function computeFinalPaperTotals(
   row: MarkRowLike,
@@ -739,9 +757,9 @@ export function computeFinalPaperTotals(
       ? (Math.min(Math.max(raw, 0), max) / max) * contributionMax
       : 0;
 
-    sectionRaw[key] = round1(raw);
-    sectionMax[key] = round1(max);
-    sectionWeighted[key] = round1(contribution);
+    sectionRaw[key] = raw;
+    sectionMax[key] = max;
+    sectionWeighted[key] = contribution;
     if (!parentAbsent[key]) rawTotal += raw;
     weighted += contribution;
   }
@@ -750,9 +768,9 @@ export function computeFinalPaperTotals(
     sectionRaw,
     sectionMax,
     sectionWeighted,
-    rawTotal: round1(rawTotal),
-    maxTotal: round1(totalMax),
-    weighted: round1(weighted),
+    rawTotal,
+    maxTotal: totalMax,
+    weighted,
   };
 }
 
@@ -824,9 +842,9 @@ export function computeWeightedScores(
   }
 
   return {
-    ca: round1(ca),
-    final: round1(final),
-    total: round1(ca + final),
+    ca,
+    final,
+    total: ca + final,
     caMax: round1(caMax),
     finalMax: round1(finalMax),
   };
@@ -1350,7 +1368,7 @@ export function buildMarksheetCsv(
   if (finalBp.enabled) {
     header.push("Theory Absent", "Practical Absent", "Final Raw Total", "Final Raw Max");
   }
-  header.push("CA Weighted", "Final Weighted", "Module Mark (100)");
+  header.push("CA Weighted", "Final Weighted", "Module Mark (100)", "Grade");
 
   const lines = [header.map(csvCell).join(",")];
 
@@ -1365,12 +1383,12 @@ export function buildMarksheetCsv(
       const keys = componentQuestionKeys(comp);
 
       for (const q of keys) {
-        cells.push(absent ? "AB" : (toFiniteNumber(marks[q]) ?? ""));
+        cells.push(absent ? "AB" : (toFiniteNumber(marks[q]) === null ? "" : formatMark2dp(Number(marks[q]))));
       }
       cells.push(
-        absent ? "AB" : round1(computeRowTotal(marks, componentRequiredAnswers(comp), comp.scoreMode))
+        absent ? "AB" : formatMark2dp(computeRowTotal(marks, componentRequiredAnswers(comp), comp.scoreMode))
       );
-      cells.push(round1(componentMaxScore(comp)));
+      cells.push(formatMark2dp(componentMaxScore(comp)));
       cells.push(absent ? "YES" : "");
     }
 
@@ -1380,11 +1398,11 @@ export function buildMarksheetCsv(
       const absent = section.parent === "theory" ? absence.isAbsentTheory : absence.isAbsentPractical;
       const sectionMarks = getFinalSectionMarks(finalMarks, section.key);
       for (const question of section.blueprint.questions) {
-        cells.push(absent ? "AB" : (toFiniteNumber(sectionMarks[question.id]) ?? ""));
+        cells.push(absent ? "AB" : (toFiniteNumber(sectionMarks[question.id]) === null ? "" : formatMark2dp(Number(sectionMarks[question.id]))));
       }
       cells.push(
-        absent ? "AB" : round1(computeFinalSectionTotal(sectionMarks, section.blueprint)),
-        round1(finalSectionMaxScore(section.blueprint))
+        absent ? "AB" : formatMark2dp(computeFinalSectionTotal(sectionMarks, section.blueprint)),
+        formatMark2dp(finalSectionMaxScore(section.blueprint))
       );
     }
     if (finalBp.enabled) {
@@ -1392,13 +1410,13 @@ export function buildMarksheetCsv(
       cells.push(
         absence.isAbsentTheory ? "YES" : "",
         absence.isAbsentPractical ? "YES" : "",
-        finalTotals.rawTotal,
-        finalTotals.maxTotal
+        formatMark2dp(finalTotals.rawTotal),
+        formatMark2dp(finalTotals.maxTotal)
       );
     }
 
     const weighted = computeWeightedScores(row, comps, finalBp);
-    cells.push(weighted.ca, weighted.final, weighted.total);
+    cells.push(formatMark2dp(weighted.ca), formatMark2dp(weighted.final), roundUpWhole(weighted.total), gradeForMark(weighted.total, { incomplete: hasGradeAbsence(row) }).grade);
 
     lines.push(cells.map(csvCell).join(","));
   }
