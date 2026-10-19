@@ -50,19 +50,24 @@ import {
   buildMarksheetCsv,
   caGroupOf,
   caTypeLabel,
+  caWeightingModeOf,
+  changeCaComponentType,
+  componentAnsweredCount,
   componentMaxScore,
   componentQuestionCount,
   componentQuestionKeys,
   componentQuestionMax,
   componentRawTotal,
   componentRequiredAnswers,
+  computeComponentTotal,
   computeFinalPaperTotals,
   computeFinalSectionTotal,
   computeRowProgress,
-  computeRowTotal,
   computeWeightedScores,
   downloadCsv,
   enteredMarks,
+  fillCaMarksFromFirst,
+  finalSectionAnsweredCount,
   finalSectionMaxScore,
   finalSectionRequiredCount,
   finalSectionWeightage,
@@ -79,10 +84,17 @@ import {
   normaliseFinalBlueprint,
   normaliseFinalMarks,
   questionKeys,
+  resizeCaQuestions,
+  setCaCommonMax,
+  setCaQuestionMax,
+  setCaRequiredAnswers,
+  setCaWeightingMode,
   statusBadgeClass,
   statusLabel,
+  sumHighestMaxima,
   validateBlueprintInput,
   validateMarksheet,
+  type CaWeightingMode,
   type MarksheetIssue,
 } from "@/lib/lecturer-marks";
 
@@ -128,10 +140,12 @@ const FINAL_SECTION_SETUP: { key: FinalSectionKey; label: string; parent: "theor
 /**
  * CA blueprints come in two shapes (see @/types/hod):
  *   Group A — practical/performance work: one mark per student.
- *   Group B — written assessments: one mark per question, each with its own weightage.
+ *   Group B — written assessments (Quiz, Assignment, Midterm, Tutorial, MCQ): one
+ *             mark per question, with individual or common weightage, where the
+ *             highest N answers count.
  */
-const GROUP_A_PREVIEW: readonly string[] = CA_GROUP_A_TYPES.slice(0, 3);
-const GROUP_B_PREVIEW: readonly string[] = CA_GROUP_B_TYPES.slice(0, 4);
+const GROUP_A_PREVIEW: readonly string[] = CA_GROUP_A_TYPES;
+const GROUP_B_PREVIEW: readonly string[] = CA_GROUP_B_TYPES;
 
 /** Index formats we accept as a student identifier. */
 const INDEX_PATTERN = /^[A-Z0-9/\-]{3,20}$/;
@@ -554,66 +568,29 @@ export default function LecturerConsolePage() {
   };
 
   /**
-   * Group B — changing "total questions" re-shapes the per-question weightage
-   * rows, extending new rows with the last value the lecturer typed.
+   * Group B edits go through the pure helpers in lecturer-marks.ts (resize,
+   * weighting mode, common weight, per-question maximum, required answers, type
+   * change) so the stored shape stays coherent. They keep the hidden individual
+   * maxima and the required-answer count across toggles, saves and resizes.
    */
-  const updateCaTotalQuestions = (id: string, raw: string) => {
-    setCaComponents(prev => prev.map(c => {
-      if (c.id !== id) return c;
-      const count = Math.max(1, Math.min(50, Math.floor(Number(raw) || 1)));
-      const current = c.questionMarks ?? [];
-      const seed = current[current.length - 1] ?? (Number(c.marksPerQuestion) || 10);
-      const questionMarks = Array.from({ length: count }, (_, i) =>
-        Number(current[i]) > 0 ? Number(current[i]) : seed
-      );
-      return { ...c, totalQuestions: count, questionMarks, questionsToAnswer: count };
-    }));
-  };
+  const editCA = (id: string, update: (comp: CaComponent) => CaComponent) =>
+    setCaComponents(prev => prev.map(c => (c.id === id ? update(c) : c)));
 
-  /** Group B — the weightage (marks) carried by a single question. */
-  const updateCaQuestionMark = (id: string, index: number, raw: string) => {
-    setCaComponents(prev => prev.map(c => {
-      if (c.id !== id) return c;
-      const questionMarks = [...(c.questionMarks ?? [])];
-      questionMarks[index] = Math.max(0, Number(raw) || 0);
-      return { ...c, questionMarks, marksPerQuestion: Math.max(...questionMarks, 0) };
-    }));
-  };
+  const updateCaTotalQuestions = (id: string, raw: string) => editCA(id, c => resizeCaQuestions(c, raw));
 
-  /** Spread the current value across every question of a Group B component. */
-  const fillCaQuestionMarks = (id: string) => {
-    setCaComponents(prev => prev.map(c => {
-      if (c.id !== id) return c;
-      const marks = c.questionMarks ?? [];
-      const seed = marks[0] ?? 10;
-      const filled = marks.map(() => seed);
-      return { ...c, questionMarks: filled, marksPerQuestion: seed };
-    }));
-  };
+  const updateCaQuestionMark = (id: string, index: number, raw: string) =>
+    editCA(id, c => setCaQuestionMax(c, index, raw));
 
-  /**
-   * Switching the type across groups re-shapes the component, carrying the
-   * overall mark across so the lecturer does not lose their intention.
-   */
-  const changeCaType = (id: string, type: string) => {
-    setCaComponents(prev => prev.map(c => {
-      if (c.id !== id) return c;
-      const nextGroup = caGroupOf(type);
-      const currentGroup = c.group ?? caGroupOf(c.type);
-      if (nextGroup === currentGroup) return { ...c, type };
+  const fillCaQuestionMarks = (id: string) => editCA(id, fillCaMarksFromFirst);
 
-      if (nextGroup === "A") {
-        const totalMarks = componentRawTotal(c) || 100;
-        return { ...c, type, group: "A", totalMarks, marksPerQuestion: totalMarks, questionMarks: [totalMarks], totalQuestions: 1, questionsToAnswer: 1 };
-      }
+  const updateCaRequiredAnswers = (id: string, raw: string) => editCA(id, c => setCaRequiredAnswers(c, raw));
 
-      const count = Math.max(1, Math.floor(Number(c.totalQuestions) || 3));
-      const total = c.totalMarks ?? componentRawTotal(c) ?? count * 10;
-      const per = Math.max(1, Math.round(total / count));
-      const questionMarks = Array.from({ length: count }, () => per);
-      return { ...c, type, group: "B", totalQuestions: count, questionMarks, questionsToAnswer: count, marksPerQuestion: per, totalMarks: undefined };
-    }));
-  };
+  const updateCaCommonMax = (id: string, raw: string) => editCA(id, c => setCaCommonMax(c, raw));
+
+  const changeCaWeightingMode = (id: string, mode: CaWeightingMode) => editCA(id, c => setCaWeightingMode(c, mode));
+
+  /** Switching the type across groups re-shapes the component (see changeCaComponentType). */
+  const changeCaType = (id: string, type: string) => editCA(id, c => changeCaComponentType(c, type));
 
   // ── Final-paper section blueprint handlers ─────────────────────────────────
   const patchFinalSection = (
@@ -1333,7 +1310,7 @@ export default function LecturerConsolePage() {
           </label>
           {!isMcq && (
             <label className="text-[10px] font-bold uppercase tracking-wider text-neutral-600">
-              Required answers
+              Required answers (highest scores count)
               <input
                 type="number"
                 min={section.questions.length > 0 ? 1 : 0}
@@ -1373,7 +1350,7 @@ export default function LecturerConsolePage() {
               <span className="text-[10px] text-neutral-400">
                 {isMcq
                   ? `${section.questions.length} question${section.questions.length === 1 ? "" : "s"} · all compulsory`
-                  : `${section.questions.length} question${section.questions.length === 1 ? "" : "s"} · answer ${section.questionsToAnswer}`}
+                  : `${section.questions.length} question${section.questions.length === 1 ? "" : "s"} · answer ${section.questionsToAnswer} · highest scores count`}
               </span>
             </div>
             <div className="divide-y divide-neutral-100 max-h-72 overflow-y-auto">
@@ -2096,7 +2073,7 @@ export default function LecturerConsolePage() {
                             <p className="text-sm text-neutral-500 font-semibold">No CA components yet.</p>
                             <p className="text-xs text-neutral-400">
                               Add a <strong className="text-violet-600">Group A</strong> component for projects, presentations and lab reports,
-                              or a <strong className="text-sky-600">Group B</strong> component for quizzes, assignments, midterms and tutorials.
+                              or a <strong className="text-sky-600">Group B</strong> component for quizzes, assignments, midterms, tutorials and MCQ tests.
                             </p>
                           </div>
                         )}
@@ -2107,6 +2084,11 @@ export default function LecturerConsolePage() {
                           const questionCount = componentQuestionCount(comp);
                           const questionMarks = comp.questionMarks ?? [];
                           const rawTotal = componentRawTotal(comp);
+                          const weightingMode = caWeightingModeOf(comp);
+                          const requiredAnswers = componentRequiredAnswers(comp);
+                          // Fixed denominator: the N highest question maxima (mean of them in AVG mode).
+                          const countedMax = componentMaxScore(comp);
+                          const shareBase = sumHighestMaxima(questionMarks.map(Number), requiredAnswers);
 
                           return (
                           <div key={comp.id} className="border border-neutral-200 rounded-xl p-4 space-y-4 bg-neutral-50/30">
@@ -2190,51 +2172,115 @@ export default function LecturerConsolePage() {
                                   />
                                 </div>
                               )}
+
+                              {group === "B" && (
+                                /* ── Group B: how many answers count ─────────── */
+                                <div className="col-span-2 sm:col-span-1">
+                                  <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider mb-1">
+                                    Required answers (highest scores count)
+                                    <input
+                                      type="number" min="1" max={questionCount}
+                                      value={requiredAnswers}
+                                      onChange={e => updateCaRequiredAnswers(comp.id, e.target.value)}
+                                      aria-label={`Component ${idx + 1} required answers`}
+                                      className="mt-1 w-full bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold normal-case tracking-normal text-neutral-800 focus:outline-none focus:border-sky-500 text-right"
+                                    />
+                                  </label>
+                                </div>
+                              )}
                             </div>
 
                             {group === "B" && (
-                              /* ── Group B: a weightage row per question ──── */
+                              /* ── Group B: weighting mode + question maxima ── */
                               <div className="border border-neutral-200 rounded-xl bg-white overflow-hidden">
-                                <div className="px-3 py-2 bg-neutral-50 border-b border-neutral-200 flex flex-wrap items-center gap-2">
-                                  <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
-                                    Weightage per question
-                                  </span>
-                                  <span className="text-[10px] text-neutral-400">
-                                    {questionCount} question{questionCount === 1 ? "" : "s"} · {rawTotal} marks in total
-                                  </span>
-                                  {questionCount > 1 && (
-                                    <button
-                                      onClick={() => fillCaQuestionMarks(comp.id)}
-                                      title="Copy Q1's weightage to every question"
-                                      className="ml-auto flex items-center gap-1 h-6 px-2 text-[10px] font-bold bg-white border border-neutral-200 text-neutral-600 rounded-md hover:bg-neutral-50 cursor-pointer"
-                                    >
-                                      <ArrowDownToLine className="h-3 w-3" />Fill from Q1
-                                    </button>
-                                  )}
+                                <div className="px-3 py-2 bg-neutral-50 border-b border-neutral-200 space-y-2">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                                      Question weighting
+                                    </span>
+                                    <span className="text-[10px] text-neutral-400">
+                                      {weightingMode === "common"
+                                        ? "One maximum applies to every question"
+                                        : "Each question has its own maximum"}
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2" role="group" aria-label={`Weighting mode for component ${idx + 1}`}>
+                                    {(["individual", "common"] as const).map(mode => (
+                                      <button
+                                        key={mode}
+                                        type="button"
+                                        aria-pressed={weightingMode === mode}
+                                        onClick={() => changeCaWeightingMode(comp.id, mode)}
+                                        className={`rounded-lg border px-3 py-1.5 text-xs font-bold cursor-pointer transition-colors ${weightingMode === mode ? "bg-sky-700 text-white border-sky-700" : "bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50"}`}
+                                      >
+                                        {mode === "individual" ? "Enable · Individual weights" : "Disable · Common weight"}
+                                      </button>
+                                    ))}
+                                  </div>
                                 </div>
-                                <div className="divide-y divide-neutral-100 max-h-72 overflow-y-auto">
-                                  {questionKeys(questionCount).map((q, questionIndex) => {
-                                    const value = Number(questionMarks[questionIndex]) || 0;
-                                    const share = rawTotal > 0 ? Math.round((value / rawTotal) * 100) : 0;
-                                    return (
-                                      <div key={q} className="flex items-center gap-3 px-3 py-1.5">
-                                        <span className="w-10 text-[11px] font-black text-neutral-500">{q}</span>
-                                        <input
-                                          type="number" min="0" max="1000"
-                                          value={questionMarks[questionIndex] ?? ""}
-                                          onChange={e => updateCaQuestionMark(comp.id, questionIndex, e.target.value)}
-                                          aria-label={`Weightage for ${q}`}
-                                          placeholder="10"
-                                          className="w-24 bg-white border border-neutral-200 rounded-lg px-2.5 py-1 text-xs font-bold text-right focus:outline-none focus:border-sky-500"
-                                        />
-                                        <span className="text-[10px] text-neutral-400 font-semibold">marks</span>
-                                        <span className="ml-auto text-[10px] font-bold text-neutral-400 tabular-nums">
-                                          {share}% of component
-                                        </span>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
+
+                                {weightingMode === "common" ? (
+                                  <div className="px-3 py-3 space-y-1.5">
+                                    <label className="block text-xs font-bold text-neutral-700">
+                                      Common weight (applies to all {questionCount} question{questionCount === 1 ? "" : "s"})
+                                      <input
+                                        type="number" min="0" max="1000" step="any"
+                                        value={comp.commonMaxMarks || ""}
+                                        onChange={e => updateCaCommonMax(comp.id, e.target.value)}
+                                        aria-label={`Component ${idx + 1} common weight`}
+                                        placeholder="10"
+                                        className="mt-1 block w-32 bg-white border border-neutral-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-right focus:outline-none focus:border-sky-500"
+                                      />
+                                    </label>
+                                    <p className="text-[10px] text-neutral-400">
+                                      Questions added later use this weight too. Switch back to individual weights to restore each question&apos;s own maximum.
+                                    </p>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="px-3 py-2 border-b border-neutral-100 flex flex-wrap items-center gap-2">
+                                      <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                                        Weightage per question
+                                      </span>
+                                      <span className="text-[10px] text-neutral-400">
+                                        {questionCount} question{questionCount === 1 ? "" : "s"} · {rawTotal} marks in total
+                                      </span>
+                                      {questionCount > 1 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => fillCaQuestionMarks(comp.id)}
+                                          title="Copy Q1's weightage to every question"
+                                          className="ml-auto flex items-center gap-1 h-6 px-2 text-[10px] font-bold bg-white border border-neutral-200 text-neutral-600 rounded-md hover:bg-neutral-50 cursor-pointer"
+                                        >
+                                          <ArrowDownToLine className="h-3 w-3" />Fill from Q1
+                                        </button>
+                                      )}
+                                    </div>
+                                    <div className="divide-y divide-neutral-100 max-h-72 overflow-y-auto">
+                                      {questionKeys(questionCount).map((q, questionIndex) => {
+                                        const value = Number(questionMarks[questionIndex]) || 0;
+                                        const share = shareBase > 0 ? Math.round((value / shareBase) * 100) : 0;
+                                        return (
+                                          <div key={q} className="flex items-center gap-3 px-3 py-1.5">
+                                            <span className="w-10 text-[11px] font-black text-neutral-500">{q}</span>
+                                            <input
+                                              type="number" min="0" max="1000" step="any"
+                                              value={questionMarks[questionIndex] ?? ""}
+                                              onChange={e => updateCaQuestionMark(comp.id, questionIndex, e.target.value)}
+                                              aria-label={`Weightage for ${q}`}
+                                              placeholder="10"
+                                              className="w-24 bg-white border border-neutral-200 rounded-lg px-2.5 py-1 text-xs font-bold text-right focus:outline-none focus:border-sky-500"
+                                            />
+                                            <span className="text-[10px] text-neutral-400 font-semibold">marks</span>
+                                            <span className="ml-auto text-[10px] font-bold text-neutral-400 tabular-nums">
+                                              {requiredAnswers < questionCount ? `up to ${share}% if counted` : `${share}% of component`}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </>
+                                )}
                               </div>
                             )}
 
@@ -2263,8 +2309,16 @@ export default function LecturerConsolePage() {
                                 </>
                               ) : (
                                 <>
-                                  <span>Marks per question: {questionMarks.join(" + ") || "—"}</span>
+                                  <span>
+                                    Marks per question: {weightingMode === "common"
+                                      ? `${comp.commonMaxMarks ?? 0} each (common weight)`
+                                      : questionMarks.join(" + ") || "—"}
+                                  </span>
                                   <span>Raw total: {rawTotal}</span>
+                                  <span>Required answers: {requiredAnswers} of {questionCount}</span>
+                                  {(requiredAnswers < questionCount || comp.scoreMode === "AVG") && (
+                                    <span>Scored out of: {countedMax}</span>
+                                  )}
                                 </>
                               )}
                               <span>Contributes: {comp.weightage || 0}%</span>
@@ -2674,9 +2728,10 @@ export default function LecturerConsolePage() {
                                           const isAbsent = row.isAbsentCa?.[comp.id] === true;
                                           const marks = row.caQuestionsMarks?.[comp.id] ?? {};
                                           const required = componentRequiredAnswers(comp);
-                                          const answered = enteredMarks(marks).length;
+                                          // Any N configured answers complete the component; only the highest N count.
+                                          const answered = componentAnsweredCount(comp, marks);
                                           const incomplete = eligible && !isAbsent && answered < required;
-                                          const total = computeRowTotal(marks, required, comp.scoreMode);
+                                          const total = computeComponentTotal(comp, marks);
                                           const max = componentMaxScore(comp);
                                           const compName = comp.name?.trim() || caTypeLabel(comp.type);
 
@@ -2956,16 +3011,18 @@ export default function LecturerConsolePage() {
                                           {theoryFinalSections.map(section => {
                                             const absent = absence.isAbsentTheory;
                                             const sectionMarks = getFinalSectionMarks(marks, section.key);
-                                            const requiredQuestions = section.blueprint.questions.slice(0, finalSectionRequiredCount(section.blueprint));
-                                            const answered = requiredQuestions.filter(question => sectionMarks[question.id] !== undefined).length;
-                                            const hasMarks = enteredMarks(sectionMarks).length > 0;
+                                            // Any N configured answers complete the section; only the highest N count.
+                                            const requiredCount = finalSectionRequiredCount(section.blueprint);
+                                            const answeredAll = finalSectionAnsweredCount(sectionMarks, section.blueprint);
+                                            const answered = Math.min(answeredAll, requiredCount);
+                                            const hasMarks = answeredAll > 0;
                                             const total = computeFinalSectionTotal(sectionMarks, section.blueprint);
                                             const max = finalSectionMaxScore(section.blueprint);
                                             const tone = section.key === "mcq"
                                               ? "border-sky-200 bg-sky-50/50 text-sky-900 hover:border-sky-300"
                                               : "border-violet-200 bg-violet-50/50 text-violet-900 hover:border-violet-300";
                                             return (
-                                              <td key={section.key} className={`px-2 py-2 text-center ${!absent && eligible && answered < requiredQuestions.length ? "bg-amber-50/50" : ""}`}>
+                                              <td key={section.key} className={`px-2 py-2 text-center ${!absent && eligible && answered < requiredCount ? "bg-amber-50/50" : ""}`}>
                                                 <button
                                                   type="button"
                                                   onClick={() => setFinalPopupTarget({ section: section.key, studentIndex: row.studentIndex })}
@@ -2973,7 +3030,7 @@ export default function LecturerConsolePage() {
                                                   className={`w-full min-w-32 rounded-lg border px-2.5 py-2 text-center transition-colors cursor-pointer ${absent ? "border-rose-100 bg-rose-50/70 text-rose-700" : tone}`}
                                                 >
                                                   <span className="block text-xs font-black tabular-nums">{absent ? "AB" : !hasMarks ? "—" : `${total.toFixed(1)} / ${max}`}</span>
-                                                  {!absent && <span className="mt-0.5 block text-[9px] font-semibold text-neutral-500">{answered}/{requiredQuestions.length} required</span>}
+                                                  {!absent && <span className="mt-0.5 block text-[9px] font-semibold text-neutral-500">{answered}/{requiredCount} required{answeredAll > requiredCount ? ` · highest ${requiredCount} count` : ""}</span>}
                                                 </button>
                                               </td>
                                             );
@@ -2996,13 +3053,15 @@ export default function LecturerConsolePage() {
                                           {practicalFinalSections.map(section => {
                                             const absent = absence.isAbsentPractical;
                                             const sectionMarks = getFinalSectionMarks(marks, section.key);
-                                            const requiredQuestions = section.blueprint.questions.slice(0, finalSectionRequiredCount(section.blueprint));
-                                            const answered = requiredQuestions.filter(question => sectionMarks[question.id] !== undefined).length;
-                                            const hasMarks = enteredMarks(sectionMarks).length > 0;
+                                            // Any N configured answers complete the section; only the highest N count.
+                                            const requiredCount = finalSectionRequiredCount(section.blueprint);
+                                            const answeredAll = finalSectionAnsweredCount(sectionMarks, section.blueprint);
+                                            const answered = Math.min(answeredAll, requiredCount);
+                                            const hasMarks = answeredAll > 0;
                                             const total = computeFinalSectionTotal(sectionMarks, section.blueprint);
                                             const max = finalSectionMaxScore(section.blueprint);
                                             return (
-                                              <td key={section.key} className={`px-2 py-2 text-center ${!absent && eligible && answered < requiredQuestions.length ? "bg-amber-50/50" : ""}`}>
+                                              <td key={section.key} className={`px-2 py-2 text-center ${!absent && eligible && answered < requiredCount ? "bg-amber-50/50" : ""}`}>
                                                 <button
                                                   type="button"
                                                   onClick={() => setFinalPopupTarget({ section: section.key, studentIndex: row.studentIndex })}
@@ -3010,7 +3069,7 @@ export default function LecturerConsolePage() {
                                                   className={`w-full min-w-32 rounded-lg border px-2.5 py-2 text-center transition-colors cursor-pointer ${absent ? "border-rose-100 bg-rose-50/70 text-rose-700" : "border-amber-200 bg-amber-50/50 text-amber-900 hover:border-amber-300"}`}
                                                 >
                                                   <span className="block text-xs font-black tabular-nums">{absent ? "AB" : !hasMarks ? "—" : `${total.toFixed(1)} / ${max}`}</span>
-                                                  {!absent && <span className="mt-0.5 block text-[9px] font-semibold text-neutral-500">{answered}/{requiredQuestions.length} required</span>}
+                                                  {!absent && <span className="mt-0.5 block text-[9px] font-semibold text-neutral-500">{answered}/{requiredCount} required{answeredAll > requiredCount ? ` · highest ${requiredCount} count` : ""}</span>}
                                                 </button>
                                               </td>
                                             );

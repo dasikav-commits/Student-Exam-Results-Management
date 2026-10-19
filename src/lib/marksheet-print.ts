@@ -5,12 +5,11 @@ import {
   finalSectionMaxScore,
   getFinalPaperSections,
   caTypeLabel,
+  componentAnsweredCount,
   componentMaxScore,
-  componentRequiredAnswers,
+  computeComponentTotal,
   computeFinalPaperTotals,
-  computeRowTotal,
   computeWeightedScores,
-  enteredMarks,
   hasAnyMark,
   isRowEligible,
   normaliseFinalAbsence,
@@ -94,8 +93,10 @@ export function buildMarksheetPrintHtml({
         .map(comp => {
           if (row.isAbsentCa?.[comp.id] === true) return `<td class="absent">AB</td>`;
           const marks = row.caQuestionsMarks?.[comp.id] ?? {};
-          if (enteredMarks(marks).length === 0) return `<td class="blank">—</td>`;
-          const total = computeRowTotal(marks, componentRequiredAnswers(comp), comp.scoreMode);
+          // Marks for unknown question IDs neither count nor make the cell non-blank.
+          if (componentAnsweredCount(comp, marks) === 0) return `<td class="blank">—</td>`;
+          // Same blueprint-aware best-N total as the register, CSV and CA register print.
+          const total = computeComponentTotal(comp, marks);
           return `<td>${fmt(total)}<span class="out"> / ${fmt(componentMaxScore(comp))}</span></td>`;
         })
         .join("");
@@ -189,6 +190,7 @@ export function buildMarksheetPrintHtml({
   </table>
   <p class="note">
     Component cells show raw totals against each maximum; weighted columns show each block's contribution to the module mark.
+    Where a component or section requires fewer answers than it has questions, only the highest-scoring required answers count.
     Module marks round up for display; grades use raw marks. Any absence gives I.
     AB marks absence for that component or Final Paper parent. Absent parents contribute zero to the weighted totals.
   </p>
