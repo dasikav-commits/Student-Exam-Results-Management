@@ -2,11 +2,10 @@ import type { CaComponent, CaGroup } from "@/types/hod";
 import {
   caGroupOf,
   caTypeLabel,
+  componentAnsweredCount,
   componentMaxScore,
-  componentRequiredAnswers,
-  computeRowTotal,
+  computeComponentTotal,
   computeWeightedScores,
-  enteredMarks,
   isRowEligible,
   type MarkRowLike,
 } from "@/lib/lecturer-marks";
@@ -85,10 +84,11 @@ export function buildCaPrintHtml({
           const marks = row.caQuestionsMarks?.[comp.id] ?? {};
           if (absent) return `<td class="score absent">AB</td>`;
 
-          const hasMark = enteredMarks(marks).length > 0;
-          if (!hasMark) return `<td class="score blank">—</td>`;
+          // Marks for unknown question IDs neither count nor make the cell non-blank.
+          if (componentAnsweredCount(comp, marks) === 0) return `<td class="score blank">—</td>`;
 
-          const total = computeRowTotal(marks, componentRequiredAnswers(comp), comp.scoreMode);
+          // Same blueprint-aware best-N total as the register, CSV and full marksheet.
+          const total = computeComponentTotal(comp, marks);
           return `<td class="score">${formatScore(total)}<span class="out-of"> / ${formatScore(componentMaxScore(comp))}</span></td>`;
         })
         .join("");
@@ -160,6 +160,7 @@ export function buildCaPrintHtml({
   </table>
   <p class="note">
     Group A columns show one overall mark; Group B columns show the component total. Values are shown against each component&apos;s maximum.
+    Where a component requires fewer answers than it has questions, only the highest-scoring required answers count.
     Total Marks is the weighted CA contribution. AB marks absence for the corresponding component.
   </p>
 </body>

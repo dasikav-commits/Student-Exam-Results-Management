@@ -15,18 +15,27 @@ import { gradeForMark, hasGradeAbsence, formatMark2dp, roundUpWhole } from "@/li
 //     → One mark per student for the whole component.
 //
 //   Group B (discrete written assessments)
-//     QUIZ · ASSIGNMENT · MIDTERM · TUTORIAL
+//     QUIZ · ASSIGNMENT · MIDTERM · TUTORIAL · MCQ
 //     → Type, Name, Weightage, Total Questions + a per-question weightage
-//       (marks) row for every question, Score Mode.
+//       (marks) row for every question — or one common maximum — plus the
+//       number of required answers and a Score Mode.
 //     → One mark per question, each with its own maximum.
 //
-// CA scoring semantics stay identical to the Second Examiner desk so variance
-// comparisons remain meaningful:
-//   • Only the first `questionsToAnswer` answered questions count, ordered
-//     naturally (Q1, Q2, … Q10 — never Q1, Q10, Q2). JSONB does not preserve
-//     key order, so relying on it made totals unstable across reloads.
-//   • SUM  → sum of those answers.
-//   • AVG  → that sum divided by `questionsToAnswer`.
+// Highest-scoring required answers (CA written components and the optional
+// Final Paper Essay / Practical sections):
+//   • A student may answer more than the required N. Only the N HIGHEST marks
+//     earned count; every entered mark stays stored.
+//   • Each score is clamped to its own question maximum, then ranked by raw
+//     marks earned (not percentage). Ties use natural question order (Q1, Q2,
+//     … Q10 — never Q1, Q10, Q2) so totals are deterministic across reloads;
+//     JSONB does not preserve key order, so relying on it would not be.
+//   • The maximum is a fixed, student-independent denominator: the sum of the
+//     N highest configured question maxima.
+//   • Zero is an entered answer; blank is not. Unknown question IDs neither
+//     satisfy completeness nor contribute to a total.
+//   • SUM → the counted answers added up, out of that maximum.
+//   • AVG → the mean of the counted answers (over N), out of the mean of the
+//     N highest maxima.
 // Final-paper scoring is sectioned and weighted by required maximum marks below.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -66,7 +75,7 @@ export function toErrorMessage(error: unknown): string {
 export const CA_GROUP_A_TYPES = ["PROJECT", "PRESENTATION", "LAB_REPORT"] as const;
 
 /** Discrete written assessments — one mark per question. */
-export const CA_GROUP_B_TYPES = ["QUIZ", "ASSIGNMENT", "MIDTERM", "TUTORIAL"] as const;
+export const CA_GROUP_B_TYPES = ["QUIZ", "ASSIGNMENT", "MIDTERM", "TUTORIAL", "MCQ"] as const;
 
 export const CA_TYPES_BY_GROUP: Record<CaGroup, readonly string[]> = {
   A: CA_GROUP_A_TYPES,
@@ -83,7 +92,7 @@ export const CA_GROUP_META: Record<CaGroup, { label: string; short: string; blur
   B: {
     label: "Group B · Written assessments",
     short: "Written assessments",
-    blurb: "Marks per question, each with its own weightage.",
+    blurb: "Marks per question — individual or common weightage — with the highest N answers counting.",
     badge: "bg-sky-100 text-sky-700 border-sky-200",
   },
 };
@@ -96,6 +105,7 @@ const CA_TYPE_GROUP: Record<string, CaGroup> = {
   ASSIGNMENT: "B",
   MIDTERM: "B",
   TUTORIAL: "B",
+  MCQ: "B",
 };
 
 export const CA_TYPE_LABELS: Record<string, string> = {
@@ -103,10 +113,14 @@ export const CA_TYPE_LABELS: Record<string, string> = {
   ASSIGNMENT: "Assignment",
   MIDTERM: "Midterm",
   TUTORIAL: "Tutorial",
+  MCQ: "MCQ",
   PROJECT: "Project",
   PRESENTATION: "Presentation",
   LAB_REPORT: "Lab report",
 };
+
+/** How a written (Group B) component's question maxima are entered. */
+export type CaWeightingMode = "individual" | "common";
 
 export function caTypeLabel(type: unknown): string {
   const key = String(type ?? "").trim().toUpperCase();
@@ -130,6 +144,11 @@ function positiveInt(value: unknown): number | null {
   if (!Number.isFinite(n)) return null;
   const floored = Math.floor(n);
   return floored > 0 ? floored : null;
+}
+
+function positiveNumber(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 function buildQuestionMarks(raw: unknown, totalQuestions: number, fallbackPer: number): number[] {
@@ -177,7 +196,24 @@ export function normaliseCaComponent(raw: unknown): CaComponent {
   }
 
   const totalQuestions = Math.max(1, legacyCount || 3);
-  const questionMarks = buildQuestionMarks(source.questionMarks, totalQuestions, legacyPer);
+  const storedMarks = buildQuestionMarks(source.questionMarks, totalQuestions, legacyPer);
+
+  // Weighting mirrors the Final Paper MCQ editor. Blueprints saved before the
+  // control existed have no mode and keep their individual (or legacy uniform) maxima.
+  const weightingMode: CaWeightingMode = source.weightingMode === "common" ? "common" : "individual";
+  const commonMaxMarks = positiveNumber(source.commonMaxMarks) ?? storedMarks[0];
+  const individualSource = Array.isArray(source.individualQuestionMarks) ? source.individualQuestionMarks : [];
+  // While individual, the individual maxima ARE the effective maxima. While
+  // common they are the hidden values that must survive toggling, saving and
+  // reloading; a question added in common mode starts at the common weight.
+  const individualQuestionMarks = weightingMode === "common"
+    ? storedMarks.map((effective, index) => positiveNumber(individualSource[index]) ?? effective)
+    : [...storedMarks];
+  const questionMarks = weightingMode === "common"
+    ? Array.from({ length: totalQuestions }, () => commonMaxMarks)
+    : storedMarks;
+
+  // The required-answer count survives edits whenever it is still valid.
   const storedAnswer = positiveInt(source.questionsToAnswer);
   const questionsToAnswer = storedAnswer ? Math.min(totalQuestions, storedAnswer) : totalQuestions;
 
@@ -185,6 +221,9 @@ export function normaliseCaComponent(raw: unknown): CaComponent {
     id, type, name, weightage, scoreMode, group,
     totalQuestions,
     questionMarks,
+    weightingMode,
+    commonMaxMarks,
+    individualQuestionMarks,
     questionsToAnswer,
     marksPerQuestion: Math.max(...questionMarks),
   };
@@ -366,11 +405,35 @@ export function finalSectionRequiredCount(section: FinalSectionBlueprint): numbe
   return required ? Math.min(count, required) : count;
 }
 
-/** Maximum marks required from a section (sum of the first required questions). */
+/**
+ * Maximum marks obtainable from a section: the N highest configured question
+ * maxima (N = required answers). A fixed denominator — it does not depend on
+ * which questions a particular student chose to answer.
+ */
 export function finalSectionMaxScore(section: FinalSectionBlueprint): number {
-  return section.questions
-    .slice(0, finalSectionRequiredCount(section))
-    .reduce((sum, question) => sum + Math.max(0, finiteNumber(question.maxMarks, 0)), 0);
+  return sumHighestMaxima(
+    section.questions.map(question => question.maxMarks),
+    finalSectionRequiredCount(section)
+  );
+}
+
+function finalScoredQuestions(section: FinalSectionBlueprint): ScoredQuestion[] {
+  return section.questions.map(question => ({ id: question.id, max: question.maxMarks }));
+}
+
+/** Entered answers for a section's CONFIGURED questions (unknown IDs excluded). */
+export function finalSectionAnsweredCount(marks: unknown, section: FinalSectionBlueprint): number {
+  return countConfiguredAnswers(marks, section.questions.map(question => question.id));
+}
+
+/**
+ * The answers that count for one examiner's marks in a section: the highest N
+ * marks earned, each clamped to its own maximum. Each examiner's marks are
+ * ranked independently, so the two examiners can legitimately count different
+ * questions.
+ */
+export function finalSectionCountedAnswers(marks: unknown, section: FinalSectionBlueprint): CountedAnswer[] {
+  return selectCountedAnswers(marks, finalScoredQuestions(section), finalSectionRequiredCount(section));
 }
 
 export function finalMaxScore(blueprint?: FinalBlueprint | null): number {
@@ -632,6 +695,99 @@ export function hasAnyMark(marks?: unknown): boolean {
   );
 }
 
+// ─── Highest-scoring required answers ────────────────────────────────────────
+//
+// One selection policy shared by CA components, the Final Paper sections, every
+// export and every dialog, so the numbers cannot drift apart. To change the
+// institutional policy (for example percentage-based selection for unequal
+// maxima) change `selectCountedAnswers` / `sumHighestMaxima` and their tests.
+
+/** A configured question as seen by the selector. */
+export interface ScoredQuestion {
+  id: string;
+  max: number;
+}
+
+/** One answer that takes part in a total. `value` is already clamped to `max`. */
+export interface CountedAnswer {
+  id: string;
+  value: number;
+  max: number;
+}
+
+/**
+ * The answers that count toward a total: the `required` HIGHEST marks earned
+ * among the configured questions.
+ *
+ *  • Each mark is clamped into [0, own maximum] BEFORE ranking, so an
+ *    over-range value can never outrank a legitimate full-marks answer.
+ *  • Ranking is by raw marks earned, not by percentage.
+ *  • Equal marks are ordered by configured position (natural Q1, Q2 … Q10),
+ *    so the choice is deterministic across reloads.
+ *  • Zero is an entered answer; null/blank is not. IDs that are not configured
+ *    are ignored entirely — they cannot count and cannot occupy a slot.
+ *  • A non-positive `required` counts every entered answer.
+ */
+export function selectCountedAnswers(
+  marks: unknown,
+  questions: readonly ScoredQuestion[],
+  required: number
+): CountedAnswer[] {
+  const source = asRecord(marks);
+  const seen = new Set<string>();
+  const entered: (CountedAnswer & { order: number })[] = [];
+
+  questions.forEach((question, order) => {
+    if (seen.has(question.id)) return; // a duplicated ID can only be counted once
+    seen.add(question.id);
+    const raw = toFiniteNumber(source[question.id]);
+    if (raw === null) return;
+    const max = Math.max(0, finiteNumber(question.max, 0));
+    entered.push({
+      id: question.id,
+      value: Math.min(max > 0 ? max : raw, Math.max(0, raw)),
+      max,
+      order,
+    });
+  });
+
+  entered.sort((a, b) => b.value - a.value || a.order - b.order);
+  const count = Math.floor(Number(required) || 0);
+  return entered
+    .slice(0, count > 0 ? count : entered.length)
+    .map(({ id, value, max }) => ({ id, value, max }));
+}
+
+/**
+ * Fixed, student-independent denominator for N required answers: the sum of the
+ * N highest configured question maxima. (With equal maxima this is N × max.)
+ */
+export function sumHighestMaxima(maxima: readonly number[], required: number): number {
+  const sorted = maxima
+    .map(value => Math.max(0, finiteNumber(value, 0)))
+    .sort((a, b) => b - a);
+  const count = Math.floor(Number(required) || 0);
+  return sorted
+    .slice(0, count > 0 ? count : sorted.length)
+    .reduce((sum, value) => sum + value, 0);
+}
+
+/**
+ * How many answers have been entered for the CONFIGURED questions. Completion
+ * accepts ANY N of them (not necessarily Q1…QN); unknown IDs never count.
+ */
+export function countConfiguredAnswers(marks: unknown, questionIds: readonly string[]): number {
+  const source = asRecord(marks);
+  const seen = new Set<string>();
+  let count = 0;
+  for (const id of questionIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (toFiniteNumber(source[id]) !== null) count += 1;
+  }
+  return count;
+}
+
 // ─── Component geometry (works on normalised OR legacy components) ───────────
 
 /** How many input cells does this component have per student? (Group A → 1) */
@@ -648,6 +804,13 @@ export function componentQuestionMax(comp: CaComponent, questionKey: string): nu
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
     const legacy = (positiveInt(comp.totalQuestions) ?? 0) * (Number(comp.marksPerQuestion) || 0);
     return legacy > 0 ? legacy : (Number(comp.marksPerQuestion) || 0);
+  }
+  // Common weighting: one maximum applies to every question, including any
+  // added while common mode is active. `questionMarks` normally already holds
+  // it; honouring it here keeps the effective maximum authoritative in one place.
+  if (comp.weightingMode === "common") {
+    const common = Number(comp.commonMaxMarks);
+    if (Number.isFinite(common) && common > 0) return common;
   }
   const index = Math.max(0, questionNumber(questionKey) - 1);
   const per = Array.isArray(comp.questionMarks) ? Number(comp.questionMarks[index]) : NaN;
@@ -667,12 +830,47 @@ export function componentRequiredAnswers(comp: CaComponent): number {
   return stored ? Math.min(count, stored) : count;
 }
 
-/** Raw score obtainable = sum of the maxima of the questions that must be answered. */
+/** The configured questions of a component, in natural order, with their maxima. */
+function componentScoredQuestions(comp: CaComponent): ScoredQuestion[] {
+  return componentQuestionKeys(comp).map(key => ({ id: key, max: componentQuestionMax(comp, key) }));
+}
+
+/**
+ * Score obtainable from a component — a fixed, student-independent denominator:
+ * the N highest configured question maxima, N being the required-answer count.
+ * SUM adds them. AVG uses their MEAN, matching the mean-of-counted-answers that
+ * `computeComponentTotal` returns in AVG mode (previously an average score was
+ * divided by a sum maximum).
+ */
 export function componentMaxScore(comp: CaComponent): number {
   const required = componentRequiredAnswers(comp);
-  return componentQuestionKeys(comp)
-    .slice(0, required)
-    .reduce((sum, key) => sum + componentQuestionMax(comp, key), 0);
+  const top = sumHighestMaxima(componentScoredQuestions(comp).map(question => question.max), required);
+  return comp.scoreMode === "AVG" && required > 0 ? top / required : top;
+}
+
+/** Entered answers for the component's CONFIGURED questions (unknown IDs excluded). */
+export function componentAnsweredCount(comp: CaComponent, marks: unknown): number {
+  return countConfiguredAnswers(marks, componentQuestionKeys(comp));
+}
+
+/**
+ * The answers that count for one student's component: the highest N marks
+ * earned, each clamped to its own question maximum. The dialogs use this to
+ * label scores, so what is shown always matches what is totalled.
+ */
+export function componentCountedAnswers(comp: CaComponent, marks: unknown): CountedAnswer[] {
+  return selectCountedAnswers(marks, componentScoredQuestions(comp), componentRequiredAnswers(comp));
+}
+
+/**
+ * Blueprint-aware raw total for one student's component. SUM adds the counted
+ * answers; AVG takes their mean over the required count (a missing answer
+ * therefore counts as zero rather than inflating the mean).
+ */
+export function computeComponentTotal(comp: CaComponent, marks: unknown): number {
+  const sum = componentCountedAnswers(comp, marks).reduce((total, answer) => total + answer.value, 0);
+  const required = componentRequiredAnswers(comp);
+  return comp.scoreMode === "AVG" ? (required > 0 ? sum / required : 0) : sum;
 }
 
 /** The component's own "worth" before weighting (Group A → totalMarks). */
@@ -681,6 +879,200 @@ export function componentRawTotal(comp: CaComponent): number {
   const marks = Array.isArray(comp.questionMarks) ? comp.questionMarks : [];
   if (marks.length === 0) return componentMaxScore(comp);
   return marks.reduce((sum, value) => sum + (Number(value) || 0), 0);
+}
+
+// ─── Written-component (Group B) blueprint editing ───────────────────────────
+//
+// Pure helpers behind the Lecturer Desk's blueprint controls. They keep the
+// stored shape coherent while a lecturer edits and DELIBERATELY do not re-run
+// `normaliseCaComponent`: that replaces a blank/zero weightage with a fallback,
+// which would make typing a new value impossible mid-edit. Unusable values are
+// reported by `validateBlueprintInput` when the blueprint is saved.
+
+/** The weighting mode of a component. Legacy/unset components are individual. */
+export function caWeightingModeOf(comp: Pick<CaComponent, "weightingMode">): CaWeightingMode {
+  return comp.weightingMode === "common" ? "common" : "individual";
+}
+
+function filledMarks(count: number, value: number): number[] {
+  return Array.from({ length: count }, () => value);
+}
+
+function nonNegative(value: unknown): number {
+  return Math.max(0, Number(value) || 0);
+}
+
+/** Effective maxima as currently held, padded/truncated to the question count. */
+function effectiveCaMarks(comp: CaComponent): number[] {
+  const source = Array.isArray(comp.questionMarks) ? comp.questionMarks : [];
+  return Array.from({ length: componentQuestionCount(comp) }, (_, index) => nonNegative(source[index]));
+}
+
+/**
+ * Re-shape a written component to `rawCount` questions (1–50).
+ *  • The weighting mode, hidden individual maxima, common weight and the
+ *    required-answer count all survive; the count is only capped at the new
+ *    number of questions.
+ *  • New questions inherit the last value (individual mode) or the common weight
+ *    (common mode — they also start there if individual mode is restored later).
+ */
+export function resizeCaQuestions(comp: CaComponent, rawCount: unknown): CaComponent {
+  if (componentGroup(comp) !== "B") return comp;
+  const count = Math.max(1, Math.min(50, Math.floor(Number(rawCount) || 1)));
+  const mode = caWeightingModeOf(comp);
+  const fallback = positiveNumber(comp.marksPerQuestion) ?? 10;
+  const commonMaxMarks = positiveNumber(comp.commonMaxMarks)
+    ?? positiveNumber(Array.isArray(comp.questionMarks) ? comp.questionMarks[0] : undefined)
+    ?? fallback;
+
+  const extend = (list: unknown): number[] => {
+    const current = Array.isArray(list) ? list : [];
+    const seed = positiveNumber(current[current.length - 1]) ?? fallback;
+    return Array.from({ length: count }, (_, index) => positiveNumber(current[index]) ?? seed);
+  };
+
+  const individualQuestionMarks = mode === "common"
+    ? Array.from({ length: count }, (_, index) =>
+        positiveNumber(comp.individualQuestionMarks?.[index]) ?? commonMaxMarks)
+    : extend(comp.questionMarks);
+  const questionMarks = mode === "common" ? filledMarks(count, commonMaxMarks) : [...individualQuestionMarks];
+  const requiredAnswers = Math.min(count, positiveInt(comp.questionsToAnswer) ?? count);
+
+  return {
+    ...comp,
+    totalQuestions: count,
+    weightingMode: mode,
+    commonMaxMarks,
+    individualQuestionMarks,
+    questionMarks,
+    questionsToAnswer: requiredAnswers,
+    marksPerQuestion: Math.max(...questionMarks, 0),
+  };
+}
+
+/**
+ * Switch between individual and common weighting without losing anything:
+ *  • → common: the current individual maxima are retained, and every question's
+ *    effective maximum becomes the common weight.
+ *  • → individual: the retained individual maxima are restored exactly.
+ */
+export function setCaWeightingMode(comp: CaComponent, mode: CaWeightingMode): CaComponent {
+  if (componentGroup(comp) !== "B" || caWeightingModeOf(comp) === mode) return comp;
+  const count = componentQuestionCount(comp);
+
+  if (mode === "common") {
+    const individualQuestionMarks = effectiveCaMarks(comp);
+    const commonMaxMarks = positiveNumber(comp.commonMaxMarks)
+      ?? positiveNumber(individualQuestionMarks[0])
+      ?? 10;
+    return {
+      ...comp,
+      weightingMode: "common",
+      commonMaxMarks,
+      individualQuestionMarks,
+      questionMarks: filledMarks(count, commonMaxMarks),
+      marksPerQuestion: commonMaxMarks,
+    };
+  }
+
+  const stored = Array.isArray(comp.individualQuestionMarks) ? comp.individualQuestionMarks : [];
+  const effective = effectiveCaMarks(comp);
+  const restored = Array.from({ length: count }, (_, index) =>
+    stored[index] === undefined ? effective[index] : nonNegative(stored[index]));
+  return {
+    ...comp,
+    weightingMode: "individual",
+    individualQuestionMarks: restored,
+    questionMarks: [...restored],
+    marksPerQuestion: Math.max(...restored, 0),
+  };
+}
+
+/** Common mode: set the one maximum that applies to every question (also future ones). */
+export function setCaCommonMax(comp: CaComponent, raw: unknown): CaComponent {
+  if (componentGroup(comp) !== "B") return comp;
+  const commonMaxMarks = nonNegative(raw);
+  if (caWeightingModeOf(comp) !== "common") return { ...comp, commonMaxMarks };
+  return {
+    ...comp,
+    commonMaxMarks,
+    questionMarks: filledMarks(componentQuestionCount(comp), commonMaxMarks),
+    marksPerQuestion: commonMaxMarks,
+  };
+}
+
+/** Individual mode: set one question's own maximum (also kept as its individual value). */
+export function setCaQuestionMax(comp: CaComponent, index: number, raw: unknown): CaComponent {
+  if (componentGroup(comp) !== "B" || caWeightingModeOf(comp) !== "individual") return comp;
+  const questionMarks = effectiveCaMarks(comp);
+  if (index < 0 || index >= questionMarks.length) return comp;
+  questionMarks[index] = nonNegative(raw);
+  return {
+    ...comp,
+    questionMarks,
+    individualQuestionMarks: [...questionMarks],
+    marksPerQuestion: Math.max(...questionMarks, 0),
+  };
+}
+
+/** Individual mode: copy Q1's maximum to every question. */
+export function fillCaMarksFromFirst(comp: CaComponent): CaComponent {
+  if (componentGroup(comp) !== "B" || caWeightingModeOf(comp) !== "individual") return comp;
+  const marks = effectiveCaMarks(comp);
+  const seed = marks[0] ?? 10;
+  const questionMarks = filledMarks(marks.length, seed);
+  return {
+    ...comp,
+    questionMarks,
+    individualQuestionMarks: [...questionMarks],
+    marksPerQuestion: seed,
+  };
+}
+
+/** How many answers are required (and count): between 1 and the number of questions. */
+export function setCaRequiredAnswers(comp: CaComponent, raw: unknown): CaComponent {
+  if (componentGroup(comp) !== "B") return comp;
+  const count = componentQuestionCount(comp);
+  return { ...comp, questionsToAnswer: Math.max(1, Math.min(count, Math.floor(Number(raw) || 1))) };
+}
+
+/**
+ * Change a component's type. Moving within a group only relabels it (every
+ * Group B setting — weighting, maxima, required answers — is untouched).
+ * Crossing groups re-shapes it, carrying the overall mark across so the
+ * lecturer does not lose their intention.
+ */
+export function changeCaComponentType(comp: CaComponent, rawType: string): CaComponent {
+  const type = String(rawType ?? "").trim().toUpperCase() || comp.type;
+  const nextGroup = caGroupOf(type);
+  const currentGroup = componentGroup(comp);
+  if (nextGroup === currentGroup) return { ...comp, type };
+
+  if (nextGroup === "A") {
+    const totalMarks = componentRawTotal(comp) || 100;
+    return {
+      ...comp, type, group: "A", totalMarks,
+      marksPerQuestion: totalMarks, questionMarks: [totalMarks], totalQuestions: 1, questionsToAnswer: 1,
+      // Written-component weighting belongs to Group B only.
+      weightingMode: undefined, commonMaxMarks: undefined, individualQuestionMarks: undefined,
+    };
+  }
+
+  const count = Math.max(1, Math.floor(Number(comp.totalQuestions) || 3));
+  const total = comp.totalMarks ?? componentRawTotal(comp) ?? count * 10;
+  const per = Math.max(1, Math.round(total / count));
+  const questionMarks = filledMarks(count, per);
+  return {
+    ...comp, type, group: "B",
+    totalQuestions: count,
+    questionMarks,
+    weightingMode: "individual",
+    commonMaxMarks: per,
+    individualQuestionMarks: [...questionMarks],
+    questionsToAnswer: count,
+    marksPerQuestion: per,
+    totalMarks: undefined,
+  };
 }
 
 export interface FinalPaperTotals {
@@ -695,19 +1087,16 @@ export interface FinalPaperTotals {
   weighted: number;
 }
 
-/** Raw score for the required questions of one final-paper section. */
+/**
+ * Raw score for one final-paper section: the highest N marks earned among its
+ * configured questions, each clamped to its own maximum. Every entered mark
+ * stays stored; answers outside the highest N are excluded only here.
+ */
 export function computeFinalSectionTotal(
   marks: unknown,
   section: FinalSectionBlueprint
 ): number {
-  return section.questions
-    .slice(0, finalSectionRequiredCount(section))
-    .reduce((sum, question) => {
-      const value = toFiniteNumber(asRecord(marks)[question.id]);
-      if (value === null) return sum;
-      const max = Math.max(0, finiteNumber(question.maxMarks, 0));
-      return sum + Math.min(max > 0 ? max : value, Math.max(0, value));
-    }, 0);
+  return finalSectionCountedAnswers(marks, section).reduce((sum, answer) => sum + answer.value, 0);
 }
 
 /**
@@ -777,8 +1166,10 @@ export function computeFinalPaperTotals(
 // ─── Core scoring ────────────────────────────────────────────────────────────
 
 /**
- * Raw (un-weighted) total for one grid row — CA component or final paper.
- * Mirrors the Second Examiner desk exactly, minus the ordering instability.
+ * Blueprint-LESS raw total for a bag of marks: the `questionsToAnswer` highest
+ * entered marks (ties keep natural question order). Because it has no blueprint
+ * it cannot clamp to per-question maxima or ignore unknown IDs — prefer
+ * `computeComponentTotal(comp, marks)` for any real component.
  */
 export function computeRowTotal(
   marks: Record<string, unknown> | null | undefined,
@@ -786,7 +1177,10 @@ export function computeRowTotal(
   scoreMode: "SUM" | "AVG" | string | undefined
 ): number {
   const required = Math.max(0, Math.floor(Number(questionsToAnswer) || 0));
-  const counted = enteredMarks(marks).slice(0, required > 0 ? required : undefined);
+  // enteredMarks() is in natural order and Array#sort is stable, so ties keep it.
+  const counted = [...enteredMarks(marks)]
+    .sort((a, b) => b.value - a.value)
+    .slice(0, required > 0 ? required : undefined);
   const sum = counted.reduce((acc, m) => acc + m.value, 0);
   if (scoreMode === "AVG") return required > 0 ? sum / required : 0;
   return sum;
@@ -825,11 +1219,7 @@ export function computeWeightedScores(
     if (row.isAbsentCa?.[comp.id]) continue; // absent → 0
     const max = componentMaxScore(comp);
     if (max <= 0) continue;
-    const raw = computeRowTotal(
-      row.caQuestionsMarks?.[comp.id] ?? {},
-      componentRequiredAnswers(comp),
-      comp.scoreMode
-    );
+    const raw = computeComponentTotal(comp, row.caQuestionsMarks?.[comp.id] ?? {});
     ca += (Math.min(Math.max(raw, 0), max) / max) * weight;
   }
 
@@ -868,9 +1258,10 @@ export function computeRowProgress(
 
   for (const comp of caComponents ?? []) {
     if (row.isAbsentCa?.[comp.id]) continue;
+    // Any N configured answers complete a component — not necessarily Q1…QN.
     const need = Math.max(1, componentRequiredAnswers(comp));
     required += need;
-    filled += Math.min(answeredCount(row.caQuestionsMarks?.[comp.id] ?? {}), need);
+    filled += Math.min(componentAnsweredCount(comp, row.caQuestionsMarks?.[comp.id] ?? {}), need);
   }
 
   if (finalBlueprint?.enabled) {
@@ -879,10 +1270,10 @@ export function computeRowProgress(
     const absence = normaliseFinalAbsence(row);
     for (const section of getFinalPaperSections(blueprint)) {
       if (section.parent === "theory" ? absence.isAbsentTheory : absence.isAbsentPractical) continue;
-      const requiredQuestions = section.blueprint.questions.slice(0, finalSectionRequiredCount(section.blueprint));
-      required += requiredQuestions.length;
+      const requiredCount = finalSectionRequiredCount(section.blueprint);
+      required += requiredCount;
       const sectionMarks = getFinalSectionMarks(marks, section.key);
-      filled += requiredQuestions.filter(question => toFiniteNumber(sectionMarks[question.id]) !== null).length;
+      filled += Math.min(finalSectionAnsweredCount(sectionMarks, section.blueprint), requiredCount);
     }
   }
 
@@ -1018,28 +1409,34 @@ export function validateMarksheet(
       const required = Math.max(1, componentRequiredAnswers(comp));
       const marks = (row.caQuestionsMarks?.[comp.id] ?? {}) as Record<string, unknown>;
       const entered = enteredMarks(marks);
+      // Only CONFIGURED questions can satisfy completeness, and any N of them
+      // will do — a student need not have answered Q1…QN.
+      const configured = entered.filter(mark => keys.includes(mark.key));
+      const ignored = entered.length - configured.length;
 
-      if (entered.length < required) {
+      if (configured.length < required) {
         issues.push({
           level: "error",
           studentIndex: index,
-          message: `${index}: ${label} — ${entered.length} of ${required} required answers recorded.`,
+          message: `${index}: ${label} — ${configured.length} of ${required} required answers recorded.`,
         });
-      } else if (entered.length > keys.length) {
+      } else if (configured.length > required) {
+        // Extra answers never block: only the highest N marks earned count.
         issues.push({
           level: "warning",
           studentIndex: index,
-          message: `${index}: ${label} — ${entered.length} answers recorded but only ${keys.length} questions exist.`,
+          message: `${index}: ${label} — ${configured.length} answers recorded; only the highest ${required} count toward the total.`,
         });
-      } else if (entered.length > required) {
+      }
+      if (ignored > 0) {
         issues.push({
           level: "warning",
           studentIndex: index,
-          message: `${index}: ${label} — ${entered.length} answers recorded but only ${required} are counted.`,
+          message: `${index}: ${label} — ${ignored} recorded mark${ignored === 1 ? " belongs" : "s belong"} to questions that are not configured and ${ignored === 1 ? "is" : "are"} ignored.`,
         });
       }
 
-      for (const mark of entered) {
+      for (const mark of configured) {
         const max = componentQuestionMax(comp, mark.key);
         if (mark.value < 0 || (max > 0 && mark.value > max)) {
           issues.push({
@@ -1064,17 +1461,15 @@ export function validateMarksheet(
         const absent = section.parent === "theory" ? absence.isAbsentTheory : absence.isAbsentPractical;
         if (absent) continue;
 
-        const requiredQuestions = section.blueprint.questions
-          .slice(0, finalSectionRequiredCount(section.blueprint));
+        const requiredCount = finalSectionRequiredCount(section.blueprint);
         const marksForCoverage = getFinalSectionMarks(normalisedMarks, section.key);
-        const enteredRequired = requiredQuestions.filter(question =>
-          toFiniteNumber(marksForCoverage[question.id]) !== null
-        ).length;
-        if (enteredRequired < requiredQuestions.length) {
+        // Any N configured answers satisfy the section — not necessarily Q1…QN.
+        const answered = finalSectionAnsweredCount(marksForCoverage, section.blueprint);
+        if (answered < requiredCount) {
           issues.push({
             level: "error",
             studentIndex: index,
-            message: `${index}: ${section.label} — ${enteredRequired} of ${requiredQuestions.length} required marks recorded.`,
+            message: `${index}: ${section.label} — ${answered} of ${requiredCount} required marks recorded.`,
           });
         }
 
@@ -1216,26 +1611,50 @@ export function validateBlueprintInput(
       }
     } else {
       // Group B — a weightage for every question.
-      const expected = normaliseCaComponent(comp);
       const count = positiveInt(comp.totalQuestions);
       if (!count) return `${label}: total questions must be a positive whole number.`;
       if (count > 50) return `${label}: total questions cannot exceed 50.`;
-      if (!Array.isArray(comp.questionMarks)) {
-        return `${label}: every question needs a weightage.`;
-      }
-      if (comp.questionMarks.length !== count) {
-        return `${label}: expected ${count} question weightage(s) but received ${comp.questionMarks.length}.`;
-      }
-      for (let q = 0; q < count; q++) {
-        const value = Number((comp.questionMarks as unknown[])[q]);
-        if (!Number.isFinite(value) || value <= 0) {
-          return `${label}: weightage for Q${q + 1} must be greater than 0.`;
-        }
-        if (value > 1000) {
-          return `${label}: weightage for Q${q + 1} looks too large (maximum 1000).`;
+
+      // Required answers: how many answers a student must give, and therefore
+      // how many (the highest marks) count. Absent means "all", which keeps
+      // older clients working.
+      if (comp.questionsToAnswer !== undefined && comp.questionsToAnswer !== null) {
+        if (!isPositiveInt(comp.questionsToAnswer) || Number(comp.questionsToAnswer) > count) {
+          return `${label}: required answers must be a whole number between 1 and ${count}.`;
         }
       }
-      void expected;
+
+      if (comp.weightingMode !== undefined && comp.weightingMode !== "individual" && comp.weightingMode !== "common") {
+        return `${label}: weighting mode must be individual or common.`;
+      }
+
+      if (comp.weightingMode === "common") {
+        // One maximum applies to every question; the effective per-question
+        // maxima are derived from it, so a stale `questionMarks` is irrelevant.
+        const common = Number(comp.commonMaxMarks);
+        if (!isFiniteNumber(comp.commonMaxMarks) || common <= 0) {
+          return `${label}: the common weight must be greater than 0.`;
+        }
+        if (common > 1000) {
+          return `${label}: the common weight looks too large (maximum 1000).`;
+        }
+      } else {
+        if (!Array.isArray(comp.questionMarks)) {
+          return `${label}: every question needs a weightage.`;
+        }
+        if (comp.questionMarks.length !== count) {
+          return `${label}: expected ${count} question weightage(s) but received ${comp.questionMarks.length}.`;
+        }
+        for (let q = 0; q < count; q++) {
+          const value = Number((comp.questionMarks as unknown[])[q]);
+          if (!Number.isFinite(value) || value <= 0) {
+            return `${label}: weightage for Q${q + 1} must be greater than 0.`;
+          }
+          if (value > 1000) {
+            return `${label}: weightage for Q${q + 1} looks too large (maximum 1000).`;
+          }
+        }
+      }
     }
   }
 
@@ -1385,9 +1804,7 @@ export function buildMarksheetCsv(
       for (const q of keys) {
         cells.push(absent ? "AB" : (toFiniteNumber(marks[q]) === null ? "" : formatMark2dp(Number(marks[q]))));
       }
-      cells.push(
-        absent ? "AB" : formatMark2dp(computeRowTotal(marks, componentRequiredAnswers(comp), comp.scoreMode))
-      );
+      cells.push(absent ? "AB" : formatMark2dp(computeComponentTotal(comp, marks)));
       cells.push(formatMark2dp(componentMaxScore(comp)));
       cells.push(absent ? "YES" : "");
     }

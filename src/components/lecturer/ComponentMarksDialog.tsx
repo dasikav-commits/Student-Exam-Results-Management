@@ -6,12 +6,14 @@ import type { CaComponent, CaGroup, StudentMarkRecord } from "@/types/hod";
 import {
   caGroupOf,
   caTypeLabel,
+  componentAnsweredCount,
+  componentCountedAnswers,
   componentMaxScore,
   componentQuestionKeys,
   componentQuestionMax,
   componentRequiredAnswers,
-  computeRowTotal,
-  enteredMarks,
+  computeComponentTotal,
+  toFiniteNumber,
 } from "@/lib/lecturer-marks";
 
 export interface ComponentMarksDialogProps {
@@ -70,10 +72,15 @@ export function ComponentMarksDialog({
     Object.fromEntries(keys.map(key => [key, sourceMarks[key] ?? null]))
   );
 
-  const answered = enteredMarks(draftMarks).length;
-  const countedAnswers = Math.min(answered, required);
+  // Any N configured answers complete the component, and only the highest N
+  // marks earned count. The labels below come from the very same selector that
+  // produces the total, so a card can never disagree with the number beside it.
+  const answered = componentAnsweredCount(comp, draftMarks);
+  const counted = componentCountedAnswers(comp, draftMarks);
+  const countedKeys = new Set(counted.map(answer => answer.id));
+  const countedAnswers = counted.length;
   const isComplete = isAbsent || answered >= required;
-  const total = computeRowTotal(draftMarks, required, comp.scoreMode);
+  const total = computeComponentTotal(comp, draftMarks);
   const hasMark = answered > 0;
   const tone = isGroupA ? "violet" : "orange";
 
@@ -138,7 +145,9 @@ export function ComponentMarksDialog({
             <p className="text-sm text-neutral-700 mt-1">
               {isGroupA
                 ? "One overall mark for this practical or performance component."
-                : "Enter each question mark, or use the quick buttons for full marks or zero."}
+                : required < keys.length
+                  ? `Answer any ${required} of ${keys.length} questions — only the highest ${required} marks count. Use the quick buttons for full marks or zero.`
+                  : "Enter each question mark, or use the quick buttons for full marks or zero."}
             </p>
           </div>
           <button
@@ -220,10 +229,12 @@ export function ComponentMarksDialog({
               {keys.map(key => {
                 const max = componentQuestionMax(comp, key);
                 const value = draftMarks[key];
+                const hasValue = toFiniteNumber(value) !== null;
+                const isCounted = countedKeys.has(key);
                 return (
                   <div
                     key={key}
-                    className={`min-w-0 rounded-xl border px-2.5 py-2 ${isAbsent ? "border-rose-100 bg-rose-50/40" : "border-orange-100 bg-orange-50/40"}`}
+                    className={`min-w-0 rounded-xl border px-2.5 py-2 ${isAbsent ? "border-rose-100 bg-rose-50/40" : hasValue && !isCounted ? "border-neutral-200 bg-neutral-100/70" : "border-orange-100 bg-orange-50/40"}`}
                   >
                     <div className="mb-1.5 flex items-center justify-between gap-1">
                       <span className="text-xs font-black uppercase tracking-wider text-neutral-700">{key}</span>
@@ -266,6 +277,14 @@ export function ComponentMarksDialog({
                     ) : (
                       <div className="h-8 flex items-center justify-center text-base font-black tabular-nums text-neutral-800">
                         {formatMark(value)}
+                      </div>
+                    )}
+                    {!isAbsent && hasValue && (
+                      <div
+                        className={`mt-1.5 text-center text-[10px] font-bold ${isCounted ? "text-emerald-700" : "text-neutral-500"}`}
+                        data-counted={isCounted ? "true" : "false"}
+                      >
+                        {isCounted ? "Counted in total" : "Outside highest scores"}
                       </div>
                     )}
                   </div>

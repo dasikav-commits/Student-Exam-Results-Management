@@ -11,11 +11,14 @@ import type {
 } from "@/types/hod";
 import {
   computeFinalSectionTotal,
+  finalSectionAnsweredCount,
+  finalSectionCountedAnswers,
   finalSectionMaxScore,
   finalSectionRequiredCount,
   finalSectionWeightage,
   getFinalSectionMarks,
   getFinalSectionBlueprint,
+  toFiniteNumber,
 } from "@/lib/lecturer-marks";
 
 export interface FinalSectionMarksDialogProps {
@@ -89,9 +92,14 @@ export function FinalSectionMarksDialog({
     Object.fromEntries(questions.map(question => [question.id, lecturerMarks[question.id] ?? null]))
   );
 
-  const isFilled = (value: number | null | undefined) => value !== null && value !== undefined && Number.isFinite(Number(value));
-  const entered = questions.filter(question => isFilled(draftMarks[question.id])).length;
-  const requiredEntered = questions.slice(0, requiredCount).filter(question => isFilled(draftMarks[question.id])).length;
+  // Any N configured answers complete the section (not necessarily Q1…QN) and
+  // only the highest N marks earned count. Each examiner's marks are ranked
+  // independently, so the two can legitimately count different questions. The
+  // labels come from the same selector that produces the totals.
+  const entered = finalSectionAnsweredCount(draftMarks, section);
+  const requiredEntered = Math.min(entered, requiredCount);
+  const countedIds = new Set(finalSectionCountedAnswers(draftMarks, section).map(answer => answer.id));
+  const examinerCountedIds = new Set(finalSectionCountedAnswers(examinerSectionMarks, section).map(answer => answer.id));
   const total = computeFinalSectionTotal(draftMarks, section);
   const isComplete = isAbsent || requiredEntered >= requiredCount;
   const progressPct = requiredCount > 0 ? Math.min(100, Math.round((requiredEntered / requiredCount) * 100)) : 100;
@@ -180,7 +188,11 @@ export function FinalSectionMarksDialog({
         )}
 
         <div className="shrink-0 px-5 pt-4 pb-2 flex items-center justify-between gap-3 text-xs text-neutral-700">
-          <span>{questions.length} question(s) · {isEditing ? "type a mark, or use the full / zero buttons." : "press Edit to change marks."}</span>
+          <span>
+            {questions.length} question(s) ·{" "}
+            {requiredCount < questions.length ? `answer any ${requiredCount} — the highest ${requiredCount} marks count · ` : ""}
+            {isEditing ? "type a mark, or use the full / zero buttons." : "press Edit to change marks."}
+          </span>
           <span className="shrink-0 font-bold tabular-nums">{Math.min(requiredEntered, requiredCount)}/{requiredCount} counted</span>
         </div>
 
@@ -189,14 +201,17 @@ export function FinalSectionMarksDialog({
             <p className="py-10 text-center text-sm italic text-neutral-500">No questions are configured for this section.</p>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-2.5">
-              {questions.map((question, index) => {
+              {questions.map(question => {
                 const max = question.maxMarks;
                 const value = draftMarks[question.id];
-                const counted = index < requiredCount;
+                const hasValue = toFiniteNumber(value) !== null;
+                const counted = countedIds.has(question.id);
+                const examinerValue = toFiniteNumber(examinerSectionMarks[question.id]);
+                const examinerCounted = examinerCountedIds.has(question.id);
                 return (
                   <div
                     key={question.id}
-                    className={`min-w-0 rounded-xl border px-2.5 py-2 ${isAbsent ? "border-rose-100 bg-rose-50/40" : counted ? tone.card : "border-neutral-100 bg-neutral-50/70"}`}
+                    className={`min-w-0 rounded-xl border px-2.5 py-2 ${isAbsent ? "border-rose-100 bg-rose-50/40" : hasValue && !counted ? "border-neutral-200 bg-neutral-100/70" : tone.card}`}
                   >
                     <div className="mb-1.5 flex items-center justify-between gap-1">
                       <span className="text-xs font-black uppercase tracking-wider text-neutral-700">{question.id}</span>
@@ -241,10 +256,28 @@ export function FinalSectionMarksDialog({
                         {formatMark(value)}
                       </div>
                     )}
+                    {!isAbsent && hasValue && (
+                      <div
+                        className={`mt-1.5 text-center text-[10px] font-bold ${counted ? "text-emerald-700" : "text-neutral-500"}`}
+                        data-counted={counted ? "true" : "false"}
+                      >
+                        {counted ? "Counted in total" : "Outside highest scores"}
+                      </div>
+                    )}
                     {showExaminerMarks && (
-                      <div className="mt-1.5 flex items-center justify-between gap-1 text-[11px] font-bold tabular-nums text-amber-700">
-                        <span className="uppercase text-[9px] text-amber-600">2nd examiner</span>
-                        <span>{isAbsent ? "AB" : examinerSectionMarks[question.id] === undefined ? "—" : `${Number(examinerSectionMarks[question.id]).toFixed(1)} / ${max}`}</span>
+                      <div className="mt-1.5 text-[11px] font-bold tabular-nums text-amber-700">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="uppercase text-[9px] text-amber-600">2nd examiner</span>
+                          <span>{isAbsent ? "AB" : examinerValue === null ? "—" : `${examinerValue.toFixed(1)} / ${max}`}</span>
+                        </div>
+                        {!isAbsent && examinerValue !== null && (
+                          <div
+                            className={`mt-0.5 text-right text-[10px] ${examinerCounted ? "text-emerald-700" : "text-neutral-500"}`}
+                            data-examiner-counted={examinerCounted ? "true" : "false"}
+                          >
+                            {examinerCounted ? "Counted in total" : "Outside highest scores"}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

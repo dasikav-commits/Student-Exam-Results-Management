@@ -5,6 +5,7 @@ import {
   asModuleStats,
   buildFinalExamTemplate,
   computeFinalPaperTotals,
+  finalSectionAnsweredCount,
   finalSectionRequiredCount,
   getFinalPaperSections,
   getFinalSectionMarks,
@@ -15,7 +16,6 @@ import {
   normaliseFinalMarkRow,
   normaliseFinalMarks,
   toErrorMessage,
-  toFiniteNumber,
   type MarkRowLike,
 } from "@/lib/lecturer-marks";
 
@@ -185,11 +185,15 @@ export async function PATCH(request: Request) {
             ? normalized.isAbsentTheory
             : normalized.isAbsentPractical;
           if (isAbsent) continue;
-          const questions = section.blueprint.questions.slice(0, finalSectionRequiredCount(section.blueprint));
+          // Any N configured answers complete a section — the Second Examiner
+          // need not have marked Q1…QN, and extra answers never block. Only the
+          // highest N marks earned count toward the total. Zero is an entered
+          // answer; unknown question IDs are ignored by the normaliser.
+          const requiredCount = finalSectionRequiredCount(section.blueprint);
           const sectionMarks = getFinalSectionMarks(normalized.secondExamMarks, section.key);
-          const missing = questions.filter(question => toFiniteNumber(sectionMarks[question.id]) === null);
-          if (missing.length > 0) {
-            incompleteMarks.push(`${row.studentIndex} · ${section.label}: ${missing.map(question => question.id).join(", ")}`);
+          const answered = finalSectionAnsweredCount(sectionMarks, section.blueprint);
+          if (answered < requiredCount) {
+            incompleteMarks.push(`${row.studentIndex} · ${section.label}: ${answered} of ${requiredCount} required answers recorded`);
           }
         }
       }

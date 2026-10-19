@@ -8,9 +8,11 @@
  *  • GROUP A — practical / performance work (PROJECT, PRESENTATION, LAB_REPORT).
  *    Scored as one mark for the whole component, out of `totalMarks`.
  *
- *  • GROUP B — written / discrete assessments (QUIZ, ASSIGNMENT, MIDTERM, TUTORIAL).
+ *  • GROUP B — written / discrete assessments (QUIZ, ASSIGNMENT, MIDTERM, TUTORIAL, MCQ).
  *    Scored question by question, where every question carries its own weightage
- *    (marks) in `questionMarks`, aligned to Q1…Qn.
+ *    (marks) in `questionMarks`, aligned to Q1…Qn. Like the Final Paper MCQ editor,
+ *    a written component can use individual maxima per question or one common
+ *    maximum, and it can require only the N highest-scoring answers to count.
  *
  * The group is derived from `type` (see `caGroupOf` in @/lib/lecturer-marks) and
  * mirrored onto the stored object so a component keeps its scoring shape even if
@@ -35,14 +37,31 @@ export interface CaComponent {
   // ── Group B fields ────────────────────────────────────────────────────────
   /** Number of questions on the paper. */
   totalQuestions?: number;
-  /** Per-question weightage (marks), index 0 → Q1. Length matches totalQuestions. */
+  /**
+   * EFFECTIVE per-question maximum (marks), index 0 → Q1. Length matches
+   * totalQuestions. In common mode every entry equals `commonMaxMarks`.
+   */
   questionMarks?: number[];
+  /** "individual" (default, also for legacy blueprints): each question has its own maximum. */
+  weightingMode?: "individual" | "common";
+  /** Common mode: the single maximum applied to every question, including later additions. */
+  commonMaxMarks?: number;
+  /**
+   * Individual maxima, retained while common mode overrides `questionMarks` so
+   * switching back (or saving and reloading) restores them. Mirrors
+   * `questionMarks` while the mode is individual.
+   */
+  individualQuestionMarks?: number[];
+  /**
+   * How many answers must be provided — and how many count. A student may answer
+   * more; only the highest N marks earned count toward the result. Defaults to
+   * every configured question.
+   */
+  questionsToAnswer?: number;
 
   // ── Derived / legacy (kept so older stored blueprints keep working) ───────
   /** Derived: the highest per-question weightage (Group B) or totalMarks (Group A). */
   marksPerQuestion?: number;
-  /** Derived: how many answers the student must provide (Group A → 1). */
-  questionsToAnswer?: number;
 }
 
 /** Final-paper sections use stable question IDs and an independent maximum per question. */
@@ -60,7 +79,10 @@ export interface FinalSectionBlueprint {
   commonMaxMarks?: number;
   /** Retained individual maxima while common mode overrides effective maxima. */
   individualMaxMarks?: Record<string, number>;
-  /** First N questions are required; MCQ always requires every configured question. */
+  /**
+   * How many answers are required — and count. A student may answer more; only
+   * the highest N marks earned count. MCQ always requires every configured question.
+   */
   questionsToAnswer: number;
 }
 

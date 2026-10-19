@@ -25,7 +25,7 @@ before(async () => {
   ({ PATCH: adminModulePatch } = await import("../../src/app/api/admin/modules/route"));
   ({ POST: lecturerMarksPost } = await import("../../src/app/api/lecturer/marks/route"));
 });
-import { normaliseFinalBlueprint } from "../../src/lib/lecturer-marks";
+import { normaliseCaComponent, normaliseFinalBlueprint } from "../../src/lib/lecturer-marks";
 
 const bp = normaliseFinalBlueprint({ enabled: true, weightage: 100, theory: { mcq: { questions: [{ id: "Q1", maxMarks: 100 }], questionsToAnswer: 1 } } });
 const marks = (Q1: number) => ({ theory: { mcq: { Q1 }, essay: {} }, practical: {} });
@@ -185,4 +185,167 @@ test("variance reconciliation still requires First Examiner approval before clos
   const result = await finaliseReconciled(request({ moduleCode: "TEST" }, "POST"));
   assert.equal(result.status, 200);
   assert.equal(mod.stats.marksheetStatus, "RECONCILED");
+});
+
+// ─── Highest-scoring required answers: any N complete a section, the highest N count ───
+
+const bestNBlueprint = normaliseFinalBlueprint({
+  enabled: true, weightage: 60,
+  theory: {
+    mcq: { questions: [{ id: "Q1", maxMarks: 10 }], questionsToAnswer: 1 },
+    essay: { questions: ["Q1", "Q2", "Q3"].map(id => ({ id, maxMarks: 20 })), questionsToAnswer: 2 },
+  },
+  practical: { questions: ["Q1", "Q2", "Q3"].map(id => ({ id, maxMarks: 25 })), questionsToAnswer: 2 },
+});
+const bestNQuiz = normaliseCaComponent({
+  id: "quiz", type: "QUIZ", name: "Quiz 1", weightage: 40, scoreMode: "SUM",
+  totalQuestions: 6, questionMarks: [10, 10, 10, 10, 10, 10], questionsToAnswer: 4,
+});
+const bestNModule = (status: string, caComponents: unknown[] = [bestNQuiz]) => ({
+  id: 1, code: "TEST", isFrozen: false, examLecturerId: 2,
+  stats: { caComponents, finalBlueprint: bestNBlueprint, marksheetStatus: status },
+});
+const sectionMarks = (essay: Record<string, number>, practical: Record<string, number>) =>
+  ({ theory: { mcq: { Q1: 8 }, essay }, practical });
+const bestNRow = (first: unknown, second: unknown, quiz: Record<string, number> = { Q3: 1, Q4: 2, Q5: 3, Q6: 4 }) => ({
+  id: 1, moduleCode: "TEST", studentIndex: "S001",
+  caQuestionsMarks: { quiz }, isAbsentCa: {}, finalExamQuestionsMarks: first, secondExamMarks: second,
+  isAbsentTheory: false, isAbsentPractical: false, isAbsentFinal: false, isEligible: true,
+});
+const secondBody = (second: unknown) => ({
+  moduleCode: "TEST", finalize: true,
+  students: [{ studentIndex: "S001", secondExamMarks: second, isAbsentTheory: false, isAbsentPractical: false }],
+});
+
+test("Second Examiner finalisation accepts any N answers per section; each examiner's highest N count", async () => {
+  // The first examiner's best two Essay answers are Q1 + Q3; the second examiner never marked Q1 at all.
+  const first = sectionMarks({ Q1: 20, Q2: 5, Q3: 10 }, { Q1: 25, Q2: 20 });
+  const second = sectionMarks({ Q2: 15, Q3: 15 }, { Q2: 25, Q3: 20 });
+  mock.method(prisma.module, "findUnique", async () => bestNModule("SECOND_CHECKING"));
+  mock.method(prisma.studentMark, "updateMany", () => Promise.resolve({ count: 1 }));
+  mock.method(prisma, "$transaction", async (ops: Promise<unknown>[]) => Promise.all(ops));
+  mock.method(prisma.studentMark, "findMany", async () => [bestNRow(first, second)]);
+  let nextStatus;
+  mock.method(prisma.module, "update", async (args: { data: { stats: { marksheetStatus: string } } }) => { nextStatus = args.data.stats.marksheetStatus; return {}; });
+
+  const res = await PATCH(request(secondBody(second)));
+  assert.equal(res.status, 200, "Q2 + Q3 are two answers, so the Essay is complete");
+  // Both examiners total 30 + 45 + 8 on their own highest answers, so there is no variance. First-N
+  // logic would have compared 25 against 15 and sent this sheet to reconciliation.
+  assert.equal(nextStatus, "FINALIZED");
+});
+
+test("Second Examiner finalisation refuses fewer than N answers and says how many are recorded", async () => {
+  const first = sectionMarks({ Q1: 20, Q2: 5, Q3: 10 }, { Q1: 25, Q2: 20 });
+  const second = sectionMarks({ Q3: 15 }, { Q2: 25, Q3: 20 }); // the Essay needs two answers
+  mock.method(prisma.module, "findUnique", async () => bestNModule("SECOND_CHECKING"));
+  mock.method(prisma.studentMark, "updateMany", () => Promise.resolve({ count: 1 }));
+  mock.method(prisma, "$transaction", async (ops: Promise<unknown>[]) => Promise.all(ops));
+  mock.method(prisma.studentMark, "findMany", async () => [bestNRow(first, second)]);
+  const closeModule = mock.method(prisma.module, "update", () => { throw new Error("must not change status"); });
+
+  const res = await PATCH(request(secondBody(second)));
+  assert.equal(res.status, 400);
+  const result = await res.json();
+  assert.match(result.error, /Second marking is incomplete/);
+  assert.deepEqual(result.issues, ["S001 · Theory · Essay: 1 of 2 required answers recorded"]);
+  assert.equal(closeModule.mock.callCount(), 0);
+
+  // Unknown question IDs are ignored, so they cannot make up the missing answer.
+  const stray = sectionMarks({ Q3: 15, Q9: 20 }, { Q2: 25, Q3: 20 });
+  mock.method(prisma.studentMark, "findMany", async () => [bestNRow(first, stray)]);
+  const strayRes = await PATCH(request(secondBody(stray)));
+  assert.equal(strayRes.status, 400);
+  assert.deepEqual((await strayRes.json()).issues, ["S001 · Theory · Essay: 1 of 2 required answers recorded"]);
+});
+
+test("First Examiner handover accepts any N CA and Final answers; extra answers do not block", async () => {
+  const complete = sectionMarks({ Q1: 20, Q3: 10 }, { Q2: 25, Q3: 20 }); // Practical Q1 is blank — any two will do
+  const rows = [bestNRow(complete, {})]; // the quiz has only Q3–Q6 answered
+  mock.method(prisma.module, "findUnique", async () => bestNModule("MARKING"));
+  mock.method(prisma.studentMark, "findMany", async () => rows);
+  mock.method(prisma.module, "update", async (args: { data: { stats: unknown } }) => ({ stats: args.data.stats }));
+  const submit = () => lecturerModulePatch(request({ moduleCode: "TEST", marksheetStatus: "SECOND_CHECKING", submittedTo: "SECOND_EXAMINER" }));
+
+  assert.equal((await submit()).status, 200, "Q3–Q6 of the quiz are four answers");
+
+  rows[0] = bestNRow(complete, {}, { Q1: 1, Q2: 2, Q3: 3, Q4: 4, Q5: 9, Q6: 10 });
+  assert.equal((await submit()).status, 200, "six answers where four are required is only a warning");
+
+  rows[0] = bestNRow(complete, {}, { Q1: 1, Q2: 2, Q6: 4 });
+  const shortQuiz = await submit();
+  assert.equal(shortQuiz.status, 400);
+  assert.match((await shortQuiz.json()).error, /Quiz 1 — 3 of 4 required answers recorded/);
+
+  // Marks for questions that do not exist cannot stand in for a missing answer.
+  rows[0] = bestNRow(complete, {}, { Q1: 1, Q2: 2, Q3: 3, Q99: 4 });
+  const strayQuiz = await submit();
+  assert.equal(strayQuiz.status, 400);
+  assert.match((await strayQuiz.json()).error, /Quiz 1 — 3 of 4 required answers recorded/);
+
+  rows[0] = bestNRow(sectionMarks({ Q1: 20 }, { Q2: 25, Q3: 20 }), {});
+  const shortEssay = await submit();
+  assert.equal(shortEssay.status, 400);
+  assert.match((await shortEssay.json()).error, /Theory · Essay — 1 of 2 required marks recorded/);
+});
+
+test("blueprint save persists CA common weighting, hidden individual maxima and required answers, and rejects invalid values", async () => {
+  mock.method(prisma.module, "findUnique", async () => bestNModule("MARKING"));
+  mock.method(prisma.module, "update", async (args: { data: { stats: unknown } }) => ({ stats: args.data.stats }));
+  mock.method(prisma.studentMark, "findMany", async () => []);
+  const commonQuiz = {
+    id: "quiz", type: "MCQ", name: "MCQ test", weightage: 40, scoreMode: "SUM", totalQuestions: 6,
+    weightingMode: "common", commonMaxMarks: 7, questionMarks: [7, 7, 7, 7, 7, 7],
+    individualQuestionMarks: [5, 8, 10, 2, 6, 9], questionsToAnswer: 4,
+  };
+  const save = (component: unknown) => lecturerModulePatch(request({ moduleCode: "TEST", caComponents: [component], finalBlueprint: bestNBlueprint }));
+
+  const res = await save(commonQuiz);
+  assert.equal(res.status, 200);
+  const [saved] = (await res.json()).stats.caComponents;
+  assert.equal(saved.type, "MCQ");
+  assert.equal(saved.weightingMode, "common");
+  assert.equal(saved.commonMaxMarks, 7);
+  assert.deepEqual(saved.questionMarks, [7, 7, 7, 7, 7, 7]);
+  assert.deepEqual(saved.individualQuestionMarks, [5, 8, 10, 2, 6, 9], "the hidden individual maxima survive the save");
+  assert.equal(saved.questionsToAnswer, 4);
+
+  // Reloading the saved shape and saving again changes nothing.
+  const again = await save(saved);
+  assert.equal(again.status, 200);
+  assert.deepEqual((await again.json()).stats.caComponents[0], saved);
+
+  for (const [override, message] of [
+    [{ commonMaxMarks: 0 }, /common weight must be greater than 0/],
+    [{ questionsToAnswer: 7 }, /required answers must be a whole number between 1 and 6/],
+    [{ questionsToAnswer: 0 }, /required answers must be a whole number between 1 and 6/],
+    [{ weightingMode: "mixed" }, /weighting mode must be individual or common/],
+  ] as const) {
+    const rejected = await save({ ...commonQuiz, ...override });
+    assert.equal(rejected.status, 400, JSON.stringify(override));
+    assert.match((await rejected.json()).error, message);
+  }
+});
+
+test("saving marks stores every entered answer, clamps to each question's maximum and drops unknown IDs", async () => {
+  const commonQuiz = normaliseCaComponent({
+    id: "quiz", type: "QUIZ", name: "Quiz 1", weightage: 40, scoreMode: "SUM", totalQuestions: 6,
+    weightingMode: "common", commonMaxMarks: 5, questionMarks: [5, 5, 5, 5, 5, 5], questionsToAnswer: 4,
+  });
+  mock.method(prisma.module, "findUnique", async () => bestNModule("MARKING", [commonQuiz]));
+  mock.method(prisma.studentMark, "findMany", async () => [{ studentIndex: "S001", secondExamMarks: {} }]);
+  let saved: { caQuestionsMarks: Record<string, Record<string, number>> } | undefined;
+  mock.method(prisma.studentMark, "updateMany", (args: { data: typeof saved }) => { saved = args.data; return Promise.resolve({ count: 1 }); });
+  mock.method(prisma, "$transaction", async (ops: Promise<unknown>[]) => Promise.all(ops));
+
+  const res = await lecturerMarksPost(request({
+    moduleCode: "TEST",
+    students: [{ studentIndex: "S001", caQuestionsMarks: { quiz: { Q1: 1, Q2: 2, Q3: 3, Q4: 4, Q5: 9, Q6: 4.5, Q99: 4 } }, finalExamQuestionsMarks: {} }],
+  }, "POST"));
+  assert.equal(res.status, 200);
+  assert.deepEqual(
+    saved?.caQuestionsMarks.quiz,
+    { Q1: 1, Q2: 2, Q3: 3, Q4: 4, Q5: 5, Q6: 4.5 },
+    "all six answers are stored (only four will count); Q5 is clamped to the common maximum; Q99 is not a question"
+  );
 });
