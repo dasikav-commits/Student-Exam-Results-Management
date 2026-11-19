@@ -1163,6 +1163,35 @@ export function computeFinalPaperTotals(
   };
 }
 
+/**
+ * Weighted Final Paper difference between the First and the Second Examiner for
+ * one student, or null when the student is not compared at all: outside the
+ * authorised cohort (ineligible), absent from the whole paper, or with no
+ * Second Examiner marks stored.
+ *
+ * One definition for both sides: the server uses it to decide between FINALIZED
+ * and RECONCILIATION_NEEDED, and the Second Examiner console uses it for its
+ * variance flags, so what the examiner sees is exactly what the server acts on.
+ */
+export function finalPaperVariance(row: MarkRowLike, blueprintInput?: FinalBlueprint | null): number | null {
+  if (!isRowEligible(row)) return null;
+  const blueprint = normaliseFinalBlueprint(blueprintInput);
+  const normalized = normaliseFinalMarkRow(row, blueprint);
+  if (normalized.isAbsentFinal) return null;
+  if (!hasAnyMark(normalized.secondExamMarks)) return null;
+  const first = computeFinalPaperTotals({ ...row, ...normalized }, blueprint).weighted;
+  const second = computeFinalPaperTotals(
+    { ...row, ...normalized, finalExamQuestionsMarks: normalized.secondExamMarks },
+    blueprint
+  ).weighted;
+  return Math.abs(first - second);
+}
+
+/** True when a variance (from `finalPaperVariance`) is large enough to need reconciliation. */
+export function exceedsVarianceThreshold(variance: number | null): boolean {
+  return variance !== null && variance > VARIANCE_THRESHOLD;
+}
+
 // ─── Core scoring ────────────────────────────────────────────────────────────
 
 /**

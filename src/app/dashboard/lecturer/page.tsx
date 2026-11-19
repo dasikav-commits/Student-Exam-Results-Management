@@ -1092,7 +1092,8 @@ export default function LecturerConsolePage() {
         <>
           <p>The marksheet returns to <strong>Marking</strong> so you can correct it.</p>
           <p className="text-neutral-400">
-            Only do this before the Examiner finalises — any marking they have already entered is preserved.
+            Only do this before the Examiner finalises. Marking they have already entered is preserved, except for any
+            question whose mark you change: the Examiner&apos;s mark for it is reset to your new mark.
           </p>
         </>
       ),
