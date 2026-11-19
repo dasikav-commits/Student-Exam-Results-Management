@@ -1,3 +1,4 @@
+import { protectModerationInputs } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/password";
@@ -5,8 +6,10 @@ import { hashPassword } from "@/lib/password";
 export const dynamic = "force-dynamic";
 
 // GET: All users for Admin control desk
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "admin");
+    if (denied) return denied;
     const users = await prisma.systemUser.findMany({
       orderBy: { createdAt: "desc" },
       select: {
@@ -30,6 +33,8 @@ export async function GET() {
 // POST: Create a new user account
 export async function POST(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "admin");
+    if (denied) return denied;
     const { email, fullName, role, password, isHod, isActiveLec, isExamLec } =
       await request.json();
 
@@ -67,6 +72,8 @@ export async function POST(request: Request) {
 // DELETE: Remove a user
 export async function DELETE(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "admin");
+    if (denied) return denied;
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get("id");
     if (!userId) {
@@ -87,6 +94,8 @@ export async function DELETE(request: Request) {
 // PATCH: Update a single capability flag for a user (isHod | isActiveLec | isExamLec)
 export async function PATCH(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "admin");
+    if (denied) return denied;
     const { id, flag, value } = await request.json();
 
     const ALLOWED_FLAGS = ["isHod", "isActiveLec", "isExamLec"] as const;

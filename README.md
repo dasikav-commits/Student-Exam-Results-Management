@@ -40,3 +40,7 @@ Do not run the schema-push command against an unintended database; review the ta
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Paper Moderation pilot
+
+The first integration is off by default. See the [Paper Moderation handoff](docs/paper-moderation-handoff.md) for role mapping, staging setup, what is included, and rollback instructions.
