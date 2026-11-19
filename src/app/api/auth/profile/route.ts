@@ -1,4 +1,4 @@
-import { protectModerationInputs } from "@/lib/moderation-session";
+import { moderationEnabled, protectModerationInputs } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
 
     const user = await prisma.systemUser.findUnique({
       where: { email: email.toLowerCase().trim() },
-      select: { fullName: true, recoveryEmail: true },
+      select: { fullName: true, recoveryEmail: true, ...(moderationEnabled() ? { moderationContact: true, moderationDepartment: true } : {}) },
     });
 
     if (!user) {
@@ -34,7 +34,7 @@ export async function GET(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const { email, fullName, recoveryEmail } = await request.json();
+    const { email, fullName, recoveryEmail, moderationContact } = await request.json();
 
     const denied = await protectModerationInputs(request, "profile", email);
     if (denied) return denied;
@@ -43,13 +43,17 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
+    if (moderationEnabled() && moderationContact !== undefined && (typeof moderationContact !== "string" || !/^(?:[0-9]{10})?$/.test(moderationContact))) {
+      return NextResponse.json({ error: "Enter a ten-digit contact number or leave it blank." }, { status: 400 });
+    }
     const updated = await prisma.systemUser.update({
       where: { email: email.toLowerCase().trim() },
       data: {
+        ...(moderationEnabled() && moderationContact !== undefined ? { moderationContact: moderationContact || null } : {}),
         ...(fullName && { fullName: fullName.trim() }),
         ...(recoveryEmail !== undefined && { recoveryEmail: recoveryEmail ? recoveryEmail.trim().toLowerCase() : null }),
       },
-      select: { fullName: true, recoveryEmail: true },
+      select: { fullName: true, recoveryEmail: true, ...(moderationEnabled() ? { moderationContact: true, moderationDepartment: true } : {}) },
     });
 
     return NextResponse.json(updated);

@@ -1,5 +1,7 @@
 # Paper Moderation integration — first PR
 
+> Historical handoff for PR #15 (reference-only). For the subsequent document, signed review, and HOD workflow, see the [combined workflow guide](paper-moderation-parity.md).
+
 ## Starting point and decisions
 
 - **Results rollback point:** `Dasika` at [`725785c7ab647beab5a41af8aa5c594c48a40d6b`](https://github.com/dasikav-commits/Student-Exam-Results-Management/commit/725785c7ab647beab5a41af8aa5c594c48a40d6b), after results PR #14. It already contains CA registers and best-N scoring, final-paper blueprints and first marking, Second Examiner correction/reconciliation, and HOD result sheets. See [the results workflow notes](second-examiner-workflow.md). This PR does not replace those workflows or their database columns.

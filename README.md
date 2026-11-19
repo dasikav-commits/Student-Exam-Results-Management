@@ -41,6 +41,6 @@ The easiest way to deploy your Next.js app is to use the [Vercel Platform](https
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
 
-## Paper Moderation pilot
+## Paper Moderation
 
-The first integration is off by default. See the [Paper Moderation handoff](docs/paper-moderation-handoff.md) for role mapping, staging setup, what is included, and rollback instructions.
+Paper Moderation is off by default. See the [combined workflow guide](docs/paper-moderation-parity.md) for local setup, roles, document and report handling, and rollback steps. The [PR #15 handoff](docs/paper-moderation-handoff.md) records the original reference-only pilot and the pre-integration baseline.

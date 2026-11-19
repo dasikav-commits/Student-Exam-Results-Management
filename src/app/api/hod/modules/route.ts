@@ -1,4 +1,4 @@
-import { protectModerationInputs } from "@/lib/moderation-session";
+import { requireHodDepartment } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { asModuleStats, buildFinalExamTemplate, normaliseFinalBlueprint } from "@/lib/lecturer-marks";
@@ -16,9 +16,12 @@ function isValidComponent(c: unknown): c is AllowedComponent {
  * GET /api/hod/modules
  * Returns all modules with assigned lecturer info
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const scope = await requireHodDepartment(request);
+    if (scope instanceof Response) return scope;
     const modules = await prisma.module.findMany({
+      where: scope,
       orderBy: { code: "asc" },
       include: {
         activeLecturer: { select: { id: true, fullName: true } },
@@ -60,8 +63,8 @@ export async function GET() {
  */
 export async function POST(request: Request) {
   try {
-    const denied = await protectModerationInputs(request, "hod");
-    if (denied) return denied;
+    const scope = await requireHodDepartment(request);
+    if (scope instanceof Response) return scope;
     const body = await request.json();
     const name = typeof body.name === "string" ? body.name.trim() : "";
     const code = typeof body.code === "string" ? body.code.trim().toUpperCase() : "";
@@ -89,7 +92,7 @@ export async function POST(request: Request) {
     }
 
     const lecturer = await prisma.systemUser.findFirst({
-      where: { id: lecturerId, role: "LECTURER" },
+      where: { id: lecturerId, role: "LECTURER", ...scope },
       select: { id: true },
     });
     if (!lecturer) {
@@ -100,6 +103,7 @@ export async function POST(request: Request) {
       data: {
         code,
         name,
+        ...scope,
         activeLecturer: { connect: { id: lecturerId } },
         eligibleStudents,
         deadline,
@@ -136,8 +140,8 @@ export async function POST(request: Request) {
  */
 export async function PATCH(request: Request) {
   try {
-    const denied = await protectModerationInputs(request, "hod");
-    if (denied) return denied;
+    const scope = await requireHodDepartment(request);
+    if (scope instanceof Response) return scope;
     const body = await request.json();
     const code = typeof body.code === "string" ? body.code.trim().toUpperCase() : "";
     if (!code) {
@@ -147,7 +151,7 @@ export async function PATCH(request: Request) {
     // ── 1. Freeze / unfreeze ──────────────────────────────────────────────
     if (typeof body.isFrozen === "boolean") {
       const updated = await prisma.module.update({
-        where: { code },
+        where: { code, ...scope },
         data: { isFrozen: body.isFrozen },
         select: { id: true, code: true, isFrozen: true },
       });
@@ -183,7 +187,7 @@ export async function PATCH(request: Request) {
             return NextResponse.json({ error: "Select a valid lecturer" }, { status: 400 });
           }
           const lecturer = await prisma.systemUser.findFirst({
-            where: { id: lecturerId, role: "LECTURER" },
+            where: { id: lecturerId, role: "LECTURER", ...scope },
             select: { id: true },
           });
           if (!lecturer) {
@@ -235,7 +239,7 @@ export async function PATCH(request: Request) {
       // clobbering caComponents / finalBlueprint.
       if (nextComponents !== null) {
         const existing = await prisma.module.findUnique({
-          where: { code },
+          where: { code, ...scope },
           select: { stats: true },
         });
         if (!existing) return NextResponse.json({ error: "Module not found" }, { status: 404 });
@@ -244,7 +248,7 @@ export async function PATCH(request: Request) {
       }
 
       const updated = await prisma.module.update({
-        where: { code },
+        where: { code, ...scope },
         data,
         select: { id: true, code: true },
       });
@@ -266,8 +270,15 @@ export async function PATCH(request: Request) {
           : parseInt(body.examLecturerId, 10);
     }
 
+    if (scope.moderationDepartment) {
+      for (const id of Object.values(data)) {
+        if (id !== null && (!Number.isSafeInteger(id) || !await prisma.systemUser.findFirst({ where: { id, role: "LECTURER", ...scope }, select: { id: true } }))) {
+          return NextResponse.json({ error: "Select a lecturer in your department" }, { status: 400 });
+        }
+      }
+    }
     const updated = await prisma.module.update({
-      where: { code },
+      where: { code, ...scope },
       data,
       select: { id: true, code: true },
     });
@@ -295,15 +306,15 @@ export async function PATCH(request: Request) {
  */
 export async function DELETE(request: Request) {
   try {
-    const denied = await protectModerationInputs(request, "hod");
-    if (denied) return denied;
+    const scope = await requireHodDepartment(request);
+    if (scope instanceof Response) return scope;
     const { searchParams } = new URL(request.url);
     const code = (searchParams.get("code") ?? "").trim().toUpperCase();
     if (!code) {
       return NextResponse.json({ error: "Module code is required" }, { status: 400 });
     }
 
-    await prisma.module.delete({ where: { code } });
+    await prisma.module.delete({ where: { code, ...scope } });
     return NextResponse.json({ success: true, code });
   } catch (error: unknown) {
     const errorCode = typeof error === "object" && error !== null && "code" in error

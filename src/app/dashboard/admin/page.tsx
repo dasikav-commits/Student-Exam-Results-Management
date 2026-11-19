@@ -22,12 +22,15 @@ import {
   Mail
 } from "lucide-react";
 
+import { DEFAULT_MODERATION_DEPARTMENT, moderationDepartments, moderationDepartmentNames } from "@/lib/moderation-departments";
+
 interface SystemUser {
   id: string;
   email: string;
   fullName: string;
   role: "ADMIN" | "LECTURER";
   department: string;
+  moderationDepartment: string;
   recoveryEmail?: string;
   capabilities: {
     isHOD: boolean;
@@ -45,6 +48,7 @@ interface AcademicModule {
   activeLecturerId: number | null;
   examLecturerId: number | null;
   assignmentLocked: boolean;
+  moderationDepartment: string;
 }
 
 export default function AdminDashboard() {
@@ -72,7 +76,7 @@ function AdminConsole() {
   const [fullName, setFullName] = useState("");
   const [role, setRole] = useState<"ADMIN" | "LECTURER">("LECTURER");
   const [password, setPassword] = useState("");
-  const [department, setDepartment] = useState("Computing & Information Systems");
+  const [department, setDepartment] = useState<string>(DEFAULT_MODERATION_DEPARTMENT);
   const [isHod, setIsHod] = useState(false);
   const [isActiveLec, setIsActiveLec] = useState(true);
   const [isExamLec, setIsExamLec] = useState(false);
@@ -90,7 +94,8 @@ function AdminConsole() {
             email: u.email,
             fullName: u.fullName,
             role: u.role,
-            department: u.department || "Computing & Information Systems",
+            department: moderationDepartmentNames[u.moderationDepartment as keyof typeof moderationDepartmentNames] ?? moderationDepartmentNames.CIS,
+            moderationDepartment: u.moderationDepartment,
             recoveryEmail: u.recoveryEmail,
             capabilities: {
               isHOD: u.isHod,
@@ -138,7 +143,7 @@ function AdminConsole() {
           password,
           isHod,
           isActiveLec,
-          isExamLec
+          isExamLec, moderationDepartment: department
         })
       });
 
@@ -150,7 +155,8 @@ function AdminConsole() {
           email: email.toLowerCase().trim(),
           fullName: fullName.trim(),
           role: role as "ADMIN" | "LECTURER",
-          department: department,
+          department: moderationDepartmentNames[result.user?.moderationDepartment as keyof typeof moderationDepartmentNames] ?? moderationDepartmentNames.CIS,
+          moderationDepartment: result.user?.moderationDepartment ?? DEFAULT_MODERATION_DEPARTMENT,
           capabilities: { isHOD: isHod, isActiveLec: isActiveLec, isExamLec: isExamLec }
         };
 
@@ -464,7 +470,8 @@ function AdminConsole() {
                             onChange={event => void assignSecondExaminer(m, event.target.value)}
                             className="max-w-64 rounded-lg border border-slate-200 bg-white p-2 disabled:opacity-50">
                             <option value="">Not assigned</option>
-                            {users.filter(u => u.role === "LECTURER" && u.capabilities.isExamLec && Number(u.id) !== m.activeLecturerId).map(u => (
+                            {users.filter(u => u.role === "LECTURER" && u.capabilities.isExamLec && Number(u.id) !== m.activeLecturerId
+                              && (process.env.NEXT_PUBLIC_PAPER_MODERATION_ENABLED !== "true" || u.moderationDepartment === m.moderationDepartment)).map(u => (
                               <option key={u.id} value={u.id}>{u.fullName || u.email}</option>
                             ))}
                             {m.examLecturerId && !users.some(u => Number(u.id) === m.examLecturerId && u.capabilities.isExamLec) && <option value={m.examLecturerId}>Current examiner (capability disabled)</option>}
@@ -564,9 +571,7 @@ function AdminConsole() {
                       onChange={(e) => setDepartment(e.target.value)}
                       className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-bold text-slate-700 bg-slate-50 appearance-none"
                     >
-                      <option value="Computing & Information Systems">Computing & Information Systems</option>
-                      <option value="Industrial Management">Industrial Management</option>
-                      <option value="Electronics">Electronics</option>
+                      {moderationDepartments.map(key => <option key={key} value={key}>{moderationDepartmentNames[key]}</option>)}
                     </select>
                     <ChevronDown className="absolute right-3 top-3.5 h-4 w-4 text-slate-400 pointer-events-none" />
                   </div>

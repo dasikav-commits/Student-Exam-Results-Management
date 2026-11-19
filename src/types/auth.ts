@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { moderationDepartments } from "@/lib/moderation-departments";
 
 export const loginSchema = z.object({
   email: z
@@ -51,6 +52,9 @@ export const signupRequestSchema = z.object({
       message: "Use your university email (@wayamba.ac.lk or @wyb.ac.lk)",
     }),
 
+  department: z.enum(moderationDepartments).optional(),
+  contact: z.string().trim().regex(/^([0-9]{10})?$/, "Enter a ten-digit contact number.").optional(),
+
   password: z
     .string()
     .min(8, "Password must be at least 8 characters long")
@@ -62,6 +66,8 @@ export const signupSchema = z
   .object({
     fullName: signupRequestSchema.shape.fullName,
     email: signupRequestSchema.shape.email,
+    department: signupRequestSchema.shape.department,
+    contact: signupRequestSchema.shape.contact,
     password: signupRequestSchema.shape.password,
     confirmPassword: z.string().min(1, "Please confirm your password"),
   })

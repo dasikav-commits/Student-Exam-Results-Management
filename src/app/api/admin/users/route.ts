@@ -1,6 +1,8 @@
-import { protectModerationInputs } from "@/lib/moderation-session";
+import { moderationEnabled, protectModerationInputs } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { z } from "zod";
+import { moderationDepartments } from "@/lib/moderation-departments";
 import { hashPassword } from "@/lib/password";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +22,7 @@ export async function GET(request: Request) {
         isHod: true,
         isActiveLec: true,
         isExamLec: true,
+        moderationDepartment: true,
         createdAt: true,
       },
     });
@@ -35,13 +38,15 @@ export async function POST(request: Request) {
   try {
     const denied = await protectModerationInputs(request, "admin");
     if (denied) return denied;
-    const { email, fullName, role, password, isHod, isActiveLec, isExamLec } =
+    const { email, fullName, role, password, isHod, isActiveLec, isExamLec, moderationDepartment } =
       await request.json();
 
     if (!email || !fullName || !role || !password) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
+    const department = z.enum(moderationDepartments).optional().safeParse(moderationDepartment);
+    if (!department.success) return NextResponse.json({ error: "Select a valid department." }, { status: 400 });
     const existing = await prisma.systemUser.findUnique({
       where: { email: email.toLowerCase().trim() },
     });
@@ -58,8 +63,9 @@ export async function POST(request: Request) {
         isHod: isHod ?? false,
         isActiveLec: isActiveLec ?? false,
         isExamLec: isExamLec ?? false,
+        moderationDepartment: moderationEnabled() ? department.data : undefined,
       },
-      select: { id: true, email: true, fullName: true, role: true },
+      select: { id: true, email: true, fullName: true, role: true, moderationDepartment: true },
     });
 
     return NextResponse.json({ success: true, user }, { status: 201 });

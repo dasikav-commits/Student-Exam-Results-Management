@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { moderationEnabled } from "@/lib/moderation-session";
 import { hashPassword } from "@/lib/password";
 import { signupRequestSchema } from "@/types/auth";
 
@@ -40,6 +41,11 @@ export async function POST(request: Request) {
           isHod: false,
           isActiveLec: false,
           isExamLec: false,
+          ...(moderationEnabled() ? {
+            moderationDepartment: parsed.data.department,
+            moderationContact: parsed.data.contact || null,
+            moderationDecision: { create: { approved: false } },
+          } : {}),
         },
         select: { id: true, email: true, fullName: true, role: true },
       });
