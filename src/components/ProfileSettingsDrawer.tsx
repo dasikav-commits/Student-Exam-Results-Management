@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { X, User, Mail, Shield, Save, Loader2, CheckCircle2, AlertCircle, KeyRound } from "lucide-react";
+import { moderationDepartmentNames } from "@/lib/moderation-departments";
 import { useAuth } from "@/context/AuthContext";
 
 interface ProfileSettingsDrawerProps {
@@ -14,6 +15,8 @@ export function ProfileSettingsDrawer({ isOpen, onClose }: ProfileSettingsDrawer
   
   // Profile state
   const [fullName, setFullName] = useState("");
+  const [moderationDepartment, setModerationDepartment] = useState("");
+  const [moderationContact, setModerationContact] = useState("");
   const [recoveryEmail, setRecoveryEmail] = useState("");
   const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [isProfileSaving, setIsProfileSaving] = useState(false);
@@ -41,6 +44,8 @@ export function ProfileSettingsDrawer({ isOpen, onClose }: ProfileSettingsDrawer
         const data = await res.json();
         setFullName(data.fullName || "");
         setRecoveryEmail(data.recoveryEmail || "");
+        setModerationDepartment(moderationDepartmentNames[data.moderationDepartment as keyof typeof moderationDepartmentNames] ?? "");
+        setModerationContact(data.moderationContact ?? "");
       }
     } catch (err) {
       console.error("Failed to load profile", err);
@@ -57,7 +62,7 @@ export function ProfileSettingsDrawer({ isOpen, onClose }: ProfileSettingsDrawer
       const res = await fetch("/api/auth/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: user?.email, fullName, recoveryEmail }),
+        body: JSON.stringify({ email: user?.email, fullName, recoveryEmail, moderationContact }),
       });
       const result = await res.json();
       if (res.ok) {
@@ -194,6 +199,15 @@ export function ProfileSettingsDrawer({ isOpen, onClose }: ProfileSettingsDrawer
                   />
                   <p className="text-[10px] text-neutral-400 mt-1">We will send password reset links to this address if you get locked out.</p>
                 </div>
+
+                {process.env.NEXT_PUBLIC_PAPER_MODERATION_ENABLED === "true" && <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block text-xs font-semibold text-neutral-700">Department
+                    <input value={moderationDepartment} readOnly className="mt-1 w-full rounded-lg border border-neutral-200 bg-neutral-50 p-2 text-xs" />
+                  </label>
+                  <label className="block text-xs font-semibold text-neutral-700">Contact number (optional)
+                    <input type="tel" pattern="[0-9]{10}" maxLength={10} value={moderationContact} onChange={e => setModerationContact(e.target.value)} className="mt-1 w-full rounded-lg border border-neutral-200 bg-white p-2 text-xs" />
+                  </label>
+                </div>}
 
                 {profileFeedback && (
                   <div className={`p-2.5 rounded-lg border flex items-start gap-2 text-[11px] font-semibold ${profileFeedback.type === "success" ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-rose-50 border-rose-200 text-rose-800"}`}>

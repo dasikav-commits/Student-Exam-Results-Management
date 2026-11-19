@@ -1,4 +1,4 @@
-import { protectModerationInputs } from "@/lib/moderation-session";
+import { moderationEnabled, protectModerationInputs } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { asModuleStats, isLecturerLocked } from "@/lib/lecturer-marks";
@@ -13,14 +13,14 @@ export async function GET(request: Request) {
     const modules = await prisma.module.findMany({
       orderBy: { code: "asc" },
       select: {
-        id: true, code: true, name: true, isFrozen: true, stats: true,
+        id: true, code: true, name: true, moderationDepartment: true, isFrozen: true, stats: true,
         activeLecturerId: true, examLecturerId: true,
         activeLecturer: { select: { fullName: true } },
         _count: { select: { studentMarks: true } },
       },
     });
     return NextResponse.json(modules.map(mod => ({
-      id: String(mod.id), code: mod.code, name: mod.name,
+      id: String(mod.id), code: mod.code, name: mod.name, moderationDepartment: mod.moderationDepartment,
       activeLecturerId: mod.activeLecturerId, examLecturerId: mod.examLecturerId,
       assignedLecturerName: mod.activeLecturer?.fullName ?? "Unassigned",
       totalStudents: mod._count.studentMarks,
@@ -52,8 +52,10 @@ export async function PATCH(request: Request) {
       if (body.examLecturerId === mod.activeLecturerId) {
         return NextResponse.json({ error: "The First and Second Examiner must be different people." }, { status: 400 });
       }
-      const examiner = await prisma.systemUser.findFirst({ where: { id: body.examLecturerId, role: "LECTURER", isExamLec: true }, select: { id: true } });
-      if (!examiner) return NextResponse.json({ error: "Choose a lecturer with Second Examiner capability." }, { status: 400 });
+      const examiner = await prisma.systemUser.findFirst({ where: { id: body.examLecturerId, role: "LECTURER", isExamLec: true, ...(moderationEnabled() ? { moderationDepartment: mod.moderationDepartment } : {}) }, select: { id: true } });
+      if (!examiner) return NextResponse.json({ error: moderationEnabled()
+        ? "Choose a lecturer with Second Examiner capability in the module’s department."
+        : "Choose a lecturer with Second Examiner capability." }, { status: 400 });
     }
     await prisma.module.update({ where: { id: mod.id }, data: { examLecturerId: body.examLecturerId } });
     return NextResponse.json({ success: true, examLecturerId: body.examLecturerId });

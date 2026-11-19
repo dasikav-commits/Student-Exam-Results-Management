@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
 import RoleGuard from "@/components/layout/RoleGuard";
+import { PaperModerationLink } from "@/components/PaperModerationLink";
 import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import {
   computeWeightedScores,
@@ -426,6 +427,7 @@ function HodConsole() {
           </div>
 
           <div className="flex items-center gap-3">
+            <PaperModerationLink />
             <span className="hidden sm:block text-xs text-neutral-500 font-medium">{user?.fullName ?? user?.email}</span>
 
             {/* ── Workspace Switcher ── */}

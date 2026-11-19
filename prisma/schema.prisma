@@ -28,6 +28,11 @@ model SystemUser {
   activeModules Module[] @relation("ActiveLecturer")
   examModules   Module[] @relation("ExamLecturer")
 
+  moderationDepartment String @default("CIS") @map("moderation_department")
+  moderationContact String? @map("moderation_contact")
+  moderationDecision ModerationPanelDecision?
+  moderationCourses ModerationCourseLecturer[]
+
   @@map("system_users")
 }
 
@@ -48,7 +53,9 @@ model Module {
   activeLecturer SystemUser?   @relation("ActiveLecturer", fields: [activeLecturerId], references: [id], onDelete: SetNull)
   examLecturer   SystemUser?   @relation("ExamLecturer",   fields: [examLecturerId],  references: [id], onDelete: SetNull)
   studentMarks   StudentMark[]
+  moderationDepartment String @default("CIS") @map("moderation_department")
   moderationPapers ModerationPaper[]
+  moderationLecturers ModerationCourseLecturer[]
 
   @@map("modules")
 }
@@ -87,6 +94,8 @@ enum PaperModerationStatus {
   UNDER_MODERATION
   REVISION_REQUIRED
   APPROVED
+  DRAFT
+  FINALIZED
 }
 
 enum PaperModerationAction {
@@ -94,6 +103,8 @@ enum PaperModerationAction {
   REQUEST_REVISION
   RESUBMIT
   APPROVE
+  SAVE_DRAFT
+  FINALIZE
 }
 
 model ModerationPaper {
@@ -108,6 +119,10 @@ model ModerationPaper {
   updatedAt     DateTime              @updatedAt @map("updated_at")
   module        Module                @relation(fields: [moduleId], references: [id], onDelete: NoAction)
   events        ModerationEvent[]
+  files         ModerationFile[]
+  bundleVersion Int? @map("bundle_version")
+  handoffAt DateTime? @map("handoff_at")
+  filePasswordHash String? @map("file_password_hash")
 
   @@unique([moduleId, academicYear, semester])
   @@map("moderation_papers")
@@ -120,9 +135,52 @@ model ModerationEvent {
   version   Int
   action    PaperModerationAction
   note      String
+  details   Json?
   createdAt DateTime              @default(now()) @map("created_at")
   paper     ModerationPaper       @relation(fields: [paperId], references: [id], onDelete: NoAction)
 
   @@unique([paperId, version])
   @@map("moderation_events")
+}
+
+model ModerationFile {
+  id          Int     @id @default(autoincrement())
+  paperId     Int     @map("paper_id")
+  version     Int
+  slot        String
+  name        String
+  contentType String  @map("content_type")
+  content     Bytes
+  protected   Boolean @default(false)
+  paper       ModerationPaper @relation(fields: [paperId], references: [id], onDelete: NoAction)
+
+  @@unique([paperId, version, slot])
+  @@map("moderation_files")
+}
+
+model ModerationSettings {
+  department String @id
+  academicYear String @map("academic_year")
+  semester     Int
+
+  @@map("moderation_settings")
+}
+
+model ModerationPanelDecision {
+  userId   Int @id @map("user_id")
+  approved Boolean
+  user     SystemUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("moderation_panel_decisions")
+}
+
+model ModerationCourseLecturer {
+  moduleId Int @map("module_id")
+  userId   Int @map("user_id")
+  module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  user     SystemUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([moduleId, userId])
+  @@index([userId])
+  @@map("moderation_course_lecturers")
 }

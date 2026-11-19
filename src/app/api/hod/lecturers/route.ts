@@ -1,4 +1,4 @@
-import { protectModerationInputs } from "@/lib/moderation-session";
+import { requireHodDepartment } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
@@ -8,14 +8,16 @@ export const dynamic = "force-dynamic";
  * GET /api/hod/lecturers
  * Returns all LECTURER users with their assigned module codes
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const scope = await requireHodDepartment(request);
+    if (scope instanceof Response) return scope;
     const lecturers = await prisma.systemUser.findMany({
-      where: { role: "LECTURER" },
+      where: { role: "LECTURER", ...scope },
       orderBy: { fullName: "asc" },
       include: {
-        activeModules: { select: { code: true } },
-        examModules: { select: { code: true } },
+        activeModules: { where: scope, select: { code: true } },
+        examModules: { where: scope, select: { code: true } },
       },
     });
 
@@ -43,8 +45,8 @@ export async function GET() {
  */
 export async function PATCH(request: Request) {
   try {
-    const denied = await protectModerationInputs(request, "hod");
-    if (denied) return denied;
+    const scope = await requireHodDepartment(request);
+    if (scope instanceof Response) return scope;
     const { lecturerId, activeModuleCodes, examModuleCodes } = await request.json();
     const lecId = parseInt(lecturerId, 10);
 
@@ -52,23 +54,27 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Invalid lecturer ID" }, { status: 400 });
     }
 
+    if (scope.moderationDepartment && !await prisma.systemUser.findFirst({ where: { id: lecId, role: "LECTURER", ...scope }, select: { id: true } })) {
+      return NextResponse.json({ error: "Lecturer not found in your department" }, { status: 404 });
+    }
+
     // Run all updates in a transaction
     await prisma.$transaction(async (tx) => {
       // Clear previous active assignments for this lecturer
       await tx.module.updateMany({
-        where: { activeLecturerId: lecId },
+        where: { activeLecturerId: lecId, ...scope },
         data: { activeLecturerId: null },
       });
       // Clear previous exam assignments
       await tx.module.updateMany({
-        where: { examLecturerId: lecId },
+        where: { examLecturerId: lecId, ...scope },
         data: { examLecturerId: null },
       });
 
       // Assign new active modules
       if (activeModuleCodes?.length > 0) {
         await tx.module.updateMany({
-          where: { code: { in: activeModuleCodes } },
+          where: { code: { in: activeModuleCodes }, ...scope },
           data: { activeLecturerId: lecId },
         });
       }
@@ -76,7 +82,7 @@ export async function PATCH(request: Request) {
       // Assign new exam modules
       if (examModuleCodes?.length > 0) {
         await tx.module.updateMany({
-          where: { code: { in: examModuleCodes } },
+          where: { code: { in: examModuleCodes }, ...scope },
           data: { examLecturerId: lecId },
         });
       }

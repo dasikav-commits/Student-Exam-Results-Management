@@ -55,23 +55,31 @@ export async function requireSession(request: Request) {
 
   const user = await prisma.systemUser.findUnique({
     where: { id },
-    select: { id: true, email: true, role: true, isHod: true, isActiveLec: true, isExamLec: true, passwordHash: true },
+    select: { id: true, email: true, fullName: true, role: true, isHod: true, isActiveLec: true, isExamLec: true, passwordHash: true, moderationDepartment: true },
   });
   if (!user?.passwordHash || !verifySession(token, user.passwordHash, secret)) {
     return apiError("Sign in again to continue.", 401);
   }
-  const { id: userId, email, role, isHod, isActiveLec, isExamLec } = user;
-  return { id: userId, email, role, isHod, isActiveLec, isExamLec };
+  const { id: userId, email, fullName, role, isHod, isActiveLec, isExamLec, moderationDepartment } = user;
+  return { id: userId, email, fullName, role, isHod, isActiveLec, isExamLec, moderationDepartment };
 }
 
 // These legacy APIs control the accounts, permissions and assignments used by the pilot.
 // Preserve their existing behavior when the pilot is switched off.
-export async function protectModerationInputs(request: Request, scope: "admin" | "hod" | "profile", email?: unknown) {
+export async function protectModerationInputs(request: Request, scope: "admin" | "profile", email?: unknown) {
   if (!moderationEnabled()) return null;
   const user = await requireSession(request);
   if (user instanceof Response) return user;
   const allowed = scope === "admin" ? user.role === "ADMIN"
-    : scope === "hod" ? user.role === "LECTURER" && user.isHod
-      : typeof email === "string" && email.toLowerCase().trim() === user.email;
+    : typeof email === "string" && email.toLowerCase().trim() === user.email;
   return allowed ? null : apiError("You do not have permission for this action.", 403);
+}
+
+// Existing HOD mutations can change the assignments that grant access to papers.
+export async function requireHodDepartment(request: Request) {
+  if (!moderationEnabled()) return { moderationDepartment: undefined };
+  const user = await requireSession(request);
+  if (user instanceof Response) return user;
+  if (user.role !== "LECTURER" || !user.isHod) return apiError("You do not have permission for this action.", 403);
+  return { moderationDepartment: user.moderationDepartment };
 }

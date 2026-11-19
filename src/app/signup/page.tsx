@@ -5,6 +5,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import Link from "next/link";
 import { User, Mail, Lock, Eye, EyeOff, Loader2, CheckCircle2 } from "lucide-react";
+import { DEFAULT_MODERATION_DEPARTMENT, moderationDepartments, moderationDepartmentNames } from "@/lib/moderation-departments";
 import { signupSchema, SignupInput } from "@/types/auth";
 
 const inputClass = (hasError: boolean) =>
@@ -28,6 +29,8 @@ export default function SignupPage() {
       email: "",
       password: "",
       confirmPassword: "",
+      department: DEFAULT_MODERATION_DEPARTMENT,
+      contact: "",
     },
   });
 
@@ -41,6 +44,7 @@ export default function SignupPage() {
           fullName: data.fullName,
           email: data.email,
           password: data.password,
+          ...(process.env.NEXT_PUBLIC_PAPER_MODERATION_ENABLED === "true" ? { department: data.department, contact: data.contact } : {}),
         }),
       });
 
@@ -122,6 +126,17 @@ export default function SignupPage() {
               )}
 
               <form onSubmit={handleSubmit(onSubmit)} className="space-y-6" noValidate>
+                {process.env.NEXT_PUBLIC_PAPER_MODERATION_ENABLED === "true" && <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="text-sm font-semibold text-slate-700">Department
+                    <select className="mt-2 block w-full rounded-xl border border-slate-300 bg-slate-50 p-2 text-sm" {...register("department")}>
+                      {moderationDepartments.map(key => <option key={key} value={key}>{moderationDepartmentNames[key]}</option>)}
+                    </select>
+                  </label>
+                  <label className="text-sm font-semibold text-slate-700">Contact number (optional)
+                    <input className="mt-2 block w-full rounded-xl border border-slate-300 bg-slate-50 p-2 text-sm" type="tel" maxLength={10} {...register("contact")} />
+                    {errors.contact && <span className="text-xs text-red-600">{errors.contact.message}</span>}
+                  </label>
+                </div>}
                 {/* Full Name */}
                 <div>
                   <label htmlFor="fullName" className="block text-sm font-semibold text-slate-700 mb-2">
