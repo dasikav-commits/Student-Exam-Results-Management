@@ -48,6 +48,7 @@ model Module {
   activeLecturer SystemUser?   @relation("ActiveLecturer", fields: [activeLecturerId], references: [id], onDelete: SetNull)
   examLecturer   SystemUser?   @relation("ExamLecturer",   fields: [examLecturerId],  references: [id], onDelete: SetNull)
   studentMarks   StudentMark[]
+  moderationPapers ModerationPaper[]
 
   @@map("modules")
 }
@@ -79,4 +80,49 @@ model StudentMark {
 
   @@unique([moduleCode, studentIndex])
   @@map("student_marks")
+}
+
+// Paper moderation is a distinct pre-exam workflow; it does not update marks or blueprints.
+enum PaperModerationStatus {
+  UNDER_MODERATION
+  REVISION_REQUIRED
+  APPROVED
+}
+
+enum PaperModerationAction {
+  SUBMIT
+  REQUEST_REVISION
+  RESUBMIT
+  APPROVE
+}
+
+model ModerationPaper {
+  id            Int                   @id @default(autoincrement())
+  moduleId      Int                   @map("module_id")
+  academicYear  String                @map("academic_year")
+  semester      Int
+  reference     String
+  status        PaperModerationStatus @default(UNDER_MODERATION)
+  version       Int                   @default(1)
+  submittedById Int                   @map("submitted_by_id")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+  module        Module                @relation(fields: [moduleId], references: [id], onDelete: NoAction)
+  events        ModerationEvent[]
+
+  @@unique([moduleId, academicYear, semester])
+  @@map("moderation_papers")
+}
+
+model ModerationEvent {
+  id        Int                   @id @default(autoincrement())
+  paperId   Int                   @map("paper_id")
+  actorId   Int                   @map("actor_id")
+  version   Int
+  action    PaperModerationAction
+  note      String
+  createdAt DateTime              @default(now()) @map("created_at")
+  paper     ModerationPaper       @relation(fields: [paperId], references: [id], onDelete: NoAction)
+
+  @@unique([paperId, version])
+  @@map("moderation_events")
 }

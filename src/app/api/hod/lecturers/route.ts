@@ -1,3 +1,4 @@
+import { protectModerationInputs } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
@@ -42,6 +43,8 @@ export async function GET() {
  */
 export async function PATCH(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "hod");
+    if (denied) return denied;
     const { lecturerId, activeModuleCodes, examModuleCodes } = await request.json();
     const lecId = parseInt(lecturerId, 10);
 

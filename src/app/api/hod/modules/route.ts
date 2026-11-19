@@ -1,3 +1,4 @@
+import { protectModerationInputs } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { asModuleStats, buildFinalExamTemplate, normaliseFinalBlueprint } from "@/lib/lecturer-marks";
@@ -59,6 +60,8 @@ export async function GET() {
  */
 export async function POST(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "hod");
+    if (denied) return denied;
     const body = await request.json();
     const name = typeof body.name === "string" ? body.name.trim() : "";
     const code = typeof body.code === "string" ? body.code.trim().toUpperCase() : "";
@@ -133,6 +136,8 @@ export async function POST(request: Request) {
  */
 export async function PATCH(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "hod");
+    if (denied) return denied;
     const body = await request.json();
     const code = typeof body.code === "string" ? body.code.trim().toUpperCase() : "";
     if (!code) {
@@ -290,6 +295,8 @@ export async function PATCH(request: Request) {
  */
 export async function DELETE(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "hod");
+    if (denied) return denied;
     const { searchParams } = new URL(request.url);
     const code = (searchParams.get("code") ?? "").trim().toUpperCase();
     if (!code) {
@@ -304,6 +311,9 @@ export async function DELETE(request: Request) {
       : undefined;
     if (errorCode === "P2025") {
       return NextResponse.json({ error: "Module not found" }, { status: 404 });
+    }
+    if (errorCode === "P2003") {
+      return NextResponse.json({ error: "This module cannot be deleted while it has moderation records." }, { status: 409 });
     }
     console.error("Error deleting module:", error);
     return NextResponse.json({ error: "Failed to delete module" }, { status: 500 });

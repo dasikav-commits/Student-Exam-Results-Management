@@ -1,3 +1,4 @@
+import { protectModerationInputs } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
@@ -7,6 +8,9 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const email = searchParams.get("email");
+
+    const denied = await protectModerationInputs(request, "profile", email);
+    if (denied) return denied;
 
     if (!email) {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
@@ -31,6 +35,9 @@ export async function GET(request: Request) {
 export async function PATCH(request: Request) {
   try {
     const { email, fullName, recoveryEmail } = await request.json();
+
+    const denied = await protectModerationInputs(request, "profile", email);
+    if (denied) return denied;
 
     if (!email) {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });

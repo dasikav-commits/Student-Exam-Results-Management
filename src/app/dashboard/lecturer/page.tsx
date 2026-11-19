@@ -5,6 +5,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { useRequireAuth } from "@/hooks/useRequireAuth";
+import { PaperModerationLink } from "@/components/PaperModerationLink";
 import { ProfileSettingsDrawer } from "@/components/ProfileSettingsDrawer";
 import { ConfirmDialog, type ConfirmTone } from "@/components/lecturer/ConfirmDialog";
 import { MarksheetSummary, type MarksheetSummaryRow } from "@/components/lecturer/MarksheetSummary";
@@ -1596,6 +1597,7 @@ export default function LecturerConsolePage() {
           </div>
 
           <div className="flex items-center gap-3">
+            <PaperModerationLink />
             {isDirty && (
               <span className="hidden sm:flex items-center gap-1.5 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse inline-block" />

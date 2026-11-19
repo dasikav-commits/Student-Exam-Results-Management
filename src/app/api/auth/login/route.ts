@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { apiError, isSameOrigin, moderationEnabled, startModerationSession } from "@/lib/moderation-session";
 import { verifyPassword } from "@/lib/password";
 
 export async function POST(request: Request) {
   try {
+    if (moderationEnabled() && !isSameOrigin(request)) return apiError("Cross-origin requests are not allowed.", 403);
     const { email, password } = await request.json();
 
     if (!email || !password) {
@@ -42,7 +44,9 @@ export async function POST(request: Request) {
       },
     };
 
-    return NextResponse.json({ user: formattedUser });
+    const response = NextResponse.json({ user: formattedUser }, { headers: { "Cache-Control": "no-store" } });
+    startModerationSession(response, dbUser.id, dbUser.passwordHash);
+    return response;
   } catch (error) {
     console.error("Auth error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

@@ -51,7 +51,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    if (process.env.NEXT_PUBLIC_PAPER_MODERATION_ENABLED === "true") {
+      try {
+        await fetch("/api/auth/logout", { method: "POST", keepalive: true });
+      } catch {
+        // The browser session still clears; the server cookie expires independently.
+      }
+    }
     localStorage.removeItem("weg_auth_token");
     localStorage.removeItem("weg_user_session");
     setUser(null);

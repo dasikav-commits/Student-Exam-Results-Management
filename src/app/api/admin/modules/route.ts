@@ -1,3 +1,4 @@
+import { protectModerationInputs } from "@/lib/moderation-session";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { asModuleStats, isLecturerLocked } from "@/lib/lecturer-marks";
@@ -5,8 +6,10 @@ import { asModuleStats, isLecturerLocked } from "@/lib/lecturer-marks";
 export const dynamic = "force-dynamic";
 
 /** Module assignments for the Admin desk; HOD examiner controls remain hidden. */
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "admin");
+    if (denied) return denied;
     const modules = await prisma.module.findMany({
       orderBy: { code: "asc" },
       select: {
@@ -32,6 +35,8 @@ export async function GET() {
 
 export async function PATCH(request: Request) {
   try {
+    const denied = await protectModerationInputs(request, "admin");
+    if (denied) return denied;
     const body = await request.json().catch(() => null);
     if (!body || typeof body.moduleCode !== "string" || !body.moduleCode.trim()
       || (body.examLecturerId !== null && (!Number.isSafeInteger(body.examLecturerId) || body.examLecturerId <= 0))) {
