@@ -4,18 +4,19 @@ import { prisma } from "@/lib/prisma";
 import {
   asModuleStats,
   buildFinalExamTemplate,
-  computeFinalPaperTotals,
+  exceedsVarianceThreshold,
+  finalPaperVariance,
   finalSectionAnsweredCount,
   finalSectionRequiredCount,
   getFinalPaperSections,
   getFinalSectionMarks,
-  hasAnyMark,
   isRowEligible,
   normaliseFinalAbsence,
   normaliseFinalBlueprint,
   normaliseFinalMarkRow,
   normaliseFinalMarks,
   toErrorMessage,
+  VARIANCE_THRESHOLD,
   type MarkRowLike,
 } from "@/lib/lecturer-marks";
 
@@ -205,24 +206,11 @@ export async function PATCH(request: Request) {
         }, { status: 400 });
       }
 
-      const hasVariance = allStudentMarks.some(rawRow => {
-        if (!isRowEligible(rawRow as Pick<MarkRowLike, "isEligible">)) return false;
-        const row = rawRow as unknown as MarkRowLike;
-        const normalized = normaliseFinalMarkRow(row, finalBlueprint);
-        if (normalized.isAbsentFinal) return false;
-        if (!hasAnyMark(normalized.secondExamMarks)) return false;
-
-        const lecturerTotal = computeFinalPaperTotals({
-          ...row,
-          ...normalized,
-        }, finalBlueprint).weighted;
-        const examinerTotal = computeFinalPaperTotals({
-          ...row,
-          ...normalized,
-          finalExamQuestionsMarks: normalized.secondExamMarks,
-        }, finalBlueprint).weighted;
-        return Math.abs(lecturerTotal - examinerTotal) > 1;
-      });
+      // Ineligible, wholly absent and unmarked students are not compared; the
+      // console uses the very same helper for its variance flags.
+      const hasVariance = allStudentMarks.some(rawRow =>
+        exceedsVarianceThreshold(finalPaperVariance(rawRow as unknown as MarkRowLike, finalBlueprint))
+      );
 
       const now = new Date().toISOString();
       const newStatus = hasVariance ? "RECONCILIATION_NEEDED" : "FINALIZED";
@@ -232,7 +220,7 @@ export async function PATCH(request: Request) {
           stats: {
             ...currentStats,
             marksheetStatus: newStatus,
-            varianceThreshold: 1,
+            varianceThreshold: VARIANCE_THRESHOLD,
             ...(hasVariance ? { reconciliationRequestedAt: now, lecturerApproved: false } : {}),
           },
         },

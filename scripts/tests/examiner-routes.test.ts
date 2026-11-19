@@ -349,3 +349,76 @@ test("saving marks stores every entered answer, clamps to each question's maximu
     "all six answers are stored (only four will count); Q5 is clamped to the common maximum; Q99 is not a question"
   );
 });
+
+// ─── Recall + correction must not leave a stale Second Examiner copy behind ───
+// "Save Progress" stores the whole ledger, including unchanged copies of the First Examiner's
+// marks. After a recall, a corrected First Examiner mark has to replace that copy, otherwise the
+// stale value shadows the correction (and the HOD sheet uses it).
+
+const savedLedger = (stored: { first: unknown; second: unknown }) => {
+  mock.method(prisma.module, "findUnique", async () => bestNModule("MARKING"));
+  mock.method(prisma.studentMark, "findMany", async () => [
+    { studentIndex: "S001", finalExamQuestionsMarks: stored.first, secondExamMarks: stored.second },
+  ]);
+  const written: { data?: Record<string, unknown> } = {};
+  mock.method(prisma.studentMark, "updateMany", (args: { data: Record<string, unknown> }) => { written.data = args.data; return Promise.resolve({ count: 1 }); });
+  mock.method(prisma, "$transaction", async (ops: Promise<unknown>[]) => Promise.all(ops));
+  return written;
+};
+const firstExaminerSaves = (first: unknown) =>
+  lecturerMarksPost(request({ moduleCode: "TEST", students: [{ studentIndex: "S001", caQuestionsMarks: {}, finalExamQuestionsMarks: first }] }, "POST"));
+
+test("a First Examiner correction after a recall replaces the stale copy in the Second Examiner's ledger", async () => {
+  const written = savedLedger({
+    first: sectionMarks({ Q1: 20, Q2: 5 }, { Q1: 25, Q2: 20 }),
+    second: sectionMarks({ Q1: 20, Q2: 5 }, { Q1: 25, Q2: 20 }), // the copy "Save Progress" stored before the recall
+  });
+  const corrected = sectionMarks({ Q1: 10, Q2: 5 }, { Q1: 25, Q2: 20 }); // essay Q1 20 -> 10
+  const res = await firstExaminerSaves(corrected);
+  assert.equal(res.status, 200);
+  assert.deepEqual(written.data?.finalExamQuestionsMarks, corrected);
+  assert.deepEqual(written.data?.secondExamMarks, corrected, "the stored second mark follows the correction instead of shadowing it");
+});
+
+test("on a recall save, corrections on untouched questions are kept and a correction on a changed question is reset", async () => {
+  const written = savedLedger({
+    first: sectionMarks({ Q1: 20, Q2: 5 }, { Q1: 25, Q2: 20 }),
+    second: sectionMarks({ Q1: 20, Q2: 9 }, { Q1: 24, Q2: 20 }), // Second Examiner corrected essay Q2 (5 -> 9) and practical Q1 (25 -> 24)
+  });
+  const res = await firstExaminerSaves(sectionMarks({ Q1: 12, Q2: 5 }, { Q1: 22, Q2: 20 })); // First Examiner changes essay Q1 and practical Q1
+  assert.equal(res.status, 200);
+  assert.deepEqual(written.data?.secondExamMarks, sectionMarks({ Q1: 12, Q2: 9 }, { Q1: 22, Q2: 20 }));
+});
+
+test("the First Examiner's save leaves second marks untouched when none are stored or nothing changed", async () => {
+  const same = sectionMarks({ Q1: 20, Q2: 5 }, { Q1: 25, Q2: 20 });
+  const noSecond = savedLedger({ first: same, second: {} });
+  assert.equal((await firstExaminerSaves(sectionMarks({ Q1: 10, Q2: 5 }, { Q1: 25, Q2: 20 }))).status, 200);
+  assert.equal("secondExamMarks" in (noSecond.data ?? {}), false, "no ledger saved yet: the console seeds it from the First Examiner's marks");
+
+  mock.restoreAll();
+  const unchanged = savedLedger({ first: same, second: sectionMarks({ Q1: 20, Q2: 5 }, { Q1: 25, Q2: 20 }) });
+  assert.equal((await firstExaminerSaves(same)).status, 200);
+  assert.equal("secondExamMarks" in (unchanged.data ?? {}), false, "same marks saved again: nothing to mirror");
+});
+
+// ─── Variance is only judged for students who are in the cohort ───
+
+for (const [eligible, expected] of [[false, "FINALIZED"], [true, "RECONCILIATION_NEEDED"]] as const) {
+  test(`finalisation ${eligible ? "counts" : "ignores"} a large difference for ${eligible ? "an eligible" : "an ineligible"} student`, async () => {
+    const first = sectionMarks({ Q1: 20, Q2: 5 }, { Q1: 25, Q2: 20 });
+    const far = sectionMarks({ Q1: 0, Q2: 0 }, { Q1: 0, Q2: 0 });
+    mock.method(prisma.module, "findUnique", async () => bestNModule("SECOND_CHECKING"));
+    mock.method(prisma.studentMark, "updateMany", () => Promise.resolve({ count: 1 }));
+    mock.method(prisma, "$transaction", async (ops: Promise<unknown>[]) => Promise.all(ops));
+    mock.method(prisma.studentMark, "findMany", async () => [
+      bestNRow(first, first),
+      { ...bestNRow(first, far), studentIndex: "S002", isEligible: eligible },
+    ]);
+    let nextStatus;
+    mock.method(prisma.module, "update", async (args: { data: { stats: { marksheetStatus: string } } }) => { nextStatus = args.data.stats.marksheetStatus; return {}; });
+    const res = await PATCH(request(secondBody(first)));
+    assert.equal(res.status, 200);
+    assert.equal(nextStatus, expected);
+  });
+}

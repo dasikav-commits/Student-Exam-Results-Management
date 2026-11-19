@@ -16,15 +16,19 @@ import type { FinalPaperMarks, FinalSectionKey, ModuleStats, StudentMarkRecord }
 import {
   computeFinalPaperTotals,
   computeFinalSectionTotal,
+  exceedsVarianceThreshold,
+  finalPaperVariance,
   finalSectionMaxScore,
   getFinalPaperSections,
   getFinalSectionBlueprint,
   getFinalSectionMarks,
   hasAnyMark,
   isFinalParentAbsent,
+  isRowEligible,
   normaliseFinalAbsence,
   normaliseFinalBlueprint,
   normaliseFinalMarks,
+  VARIANCE_THRESHOLD,
 } from "@/lib/lecturer-marks";
 
 interface ExamModule {
@@ -57,8 +61,6 @@ function ExaminerConsole() {
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [showActiveLecMarks, setShowActiveLecMarks] = useState(true);
-  // Fixed variance threshold — no slider needed
-  const VARIANCE_THRESHOLD = 1;
 
   const userCapabilities = user?.capabilities ?? { isHOD: false, isActiveLec: false, isExamLec: true };
 
@@ -136,19 +138,19 @@ function ExaminerConsole() {
 
   const totalForMarks = (student: Omit<StudentMarkRecord, "caQuestionsMarks" | "isAbsentCa">, marks: unknown) =>
     computeFinalPaperTotals(student, finalBp, marks).rawTotal;
-  const weightedTotalForMarks = (student: Omit<StudentMarkRecord, "caQuestionsMarks" | "isAbsentCa">, marks: unknown) =>
-    computeFinalPaperTotals(student, finalBp, marks).weighted;
 
   // ── Stats ──────────────────────────────────────────────────────────────────
-  const absentTheoryCount = students.filter(student => normaliseFinalAbsence(student).isAbsentTheory).length;
-  const absentPracticalCount = students.filter(student => normaliseFinalAbsence(student).isAbsentPractical).length;
+  // Ineligible students sit outside the authorised cohort. They stay on the
+  // grid, marked and read-only, but never count towards the figures below or
+  // the variance check, exactly as on the server (see finalPaperVariance).
+  const eligibleStudents = students.filter(student => isRowEligible(student));
+  const ineligibleCount = students.length - eligibleStudents.length;
+  const absentTheoryCount = eligibleStudents.filter(student => normaliseFinalAbsence(student).isAbsentTheory).length;
+  const absentPracticalCount = eligibleStudents.filter(student => normaliseFinalAbsence(student).isAbsentPractical).length;
 
-  const flaggedStudents = students.filter(student => {
-    if (normaliseFinalAbsence(student).isAbsentFinal || !hasAnyMark(student.secondExamMarks)) return false;
-    const lecturerTotal = weightedTotalForMarks(student, student.finalExamQuestionsMarks);
-    const examinerTotal = weightedTotalForMarks(student, student.secondExamMarks);
-    return Math.abs(lecturerTotal - examinerTotal) > VARIANCE_THRESHOLD;
-  });
+  const flaggedStudents = students.filter(student =>
+    exceedsVarianceThreshold(finalPaperVariance(student, finalBp))
+  );
 
   const moduleStatus = activeModule?.stats.marksheetStatus;
   const handedOver = hasExaminerHandover(moduleStatus);
@@ -331,8 +333,11 @@ function ExaminerConsole() {
               <div className="p-2.5 bg-indigo-50 rounded-lg"><Users className="h-5 w-5 text-indigo-600" /></div>
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Total Students</p>
-                <p className="text-xl font-black">{students.length}</p>
-                <p className="text-[10px] font-semibold text-neutral-500 mt-0.5">Theory AB {absentTheoryCount} · Practical AB {absentPracticalCount}</p>
+                <p className="text-xl font-black">{eligibleStudents.length}</p>
+                <p className="text-[10px] font-semibold text-neutral-500 mt-0.5">
+                  Theory AB {absentTheoryCount} · Practical AB {absentPracticalCount}
+                  {ineligibleCount > 0 && <> · Ineligible {ineligibleCount} (not marked)</>}
+                </p>
               </div>
             </div>
 
@@ -512,11 +517,10 @@ function ExaminerConsole() {
                               const wholePaperAbsent = absence.isAbsentFinal;
                               const lecturerTotal = totalForMarks(student, student.finalExamQuestionsMarks);
                               const examinerTotal = totalForMarks(student, student.secondExamMarks);
-                              const hasExamMarks = hasAnyMark(student.secondExamMarks);
-                              const variance = showActiveLecMarks && !wholePaperAbsent && hasExamMarks
-                                ? Math.abs(weightedTotalForMarks(student, student.finalExamQuestionsMarks) - weightedTotalForMarks(student, student.secondExamMarks))
-                                : null;
-                              const flagged = variance !== null && variance > VARIANCE_THRESHOLD;
+                              const eligible = isRowEligible(student);
+                              // null for ineligible, wholly absent or unmarked students
+                              const variance = showActiveLecMarks ? finalPaperVariance(student, finalBp) : null;
+                              const flagged = exceedsVarianceThreshold(variance);
                               const editedCount = finalSections.reduce((count, section) => {
                                 const first = getFinalSectionMarks(student.finalExamQuestionsMarks, section.key);
                                 const second = getFinalSectionMarks(student.secondExamMarks, section.key);
@@ -524,10 +528,11 @@ function ExaminerConsole() {
                               }, 0);
 
                               return (
-                                <tr key={student.studentIndex} className={`transition-colors ${wholePaperAbsent ? "bg-neutral-100/60 text-neutral-400" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/30"}`}>
+                                <tr key={student.studentIndex} className={`transition-colors ${wholePaperAbsent || !eligible ? "bg-neutral-100/60 text-neutral-400" : flagged ? "bg-rose-50/30" : "hover:bg-neutral-50/30"}`}>
                                   <td className="px-4 py-3 font-bold text-neutral-400">{index + 1}</td>
                                   <td className="px-4 py-3 font-bold tracking-wider uppercase">{student.studentIndex}
-                                    {editedCount > 0 && <span className="block text-[9px] text-rose-700">edited {editedCount} question(s)</span>}
+                                    {!eligible && <span className="block text-[9px] font-bold normal-case text-neutral-500">Ineligible · not marked</span>}
+                                    {eligible && editedCount > 0 && <span className="block text-[9px] text-rose-700">edited {editedCount} question(s)</span>}
                                   </td>
                                   <td className="px-3 py-3 text-center whitespace-nowrap">
                                     <div className="flex flex-wrap justify-center gap-1">
@@ -579,7 +584,7 @@ function ExaminerConsole() {
                                                 value={examinerMarks[question.id] ?? ""}
                                                 placeholder="—"
                                                 aria-label={`${student.studentIndex} ${section.label} ${question.id} out of ${question.maxMarks}`}
-                                                disabled={!handedOver || activeModule.isFrozen || isFinalized || isReconciliationNeeded || isReconciled || sectionAbsent}
+                                                disabled={!handedOver || activeModule.isFrozen || isFinalized || isReconciliationNeeded || isReconciled || sectionAbsent || !eligible}
                                                 onChange={event => updateSecondMark(student.studentIndex, section.key, question.id, event.target.value)}
                                                 title={isEditedMark(lecturerMarks[question.id], examinerMarks[question.id]) ? `was ${lecturerMarks[question.id] ?? "not entered"}` : "Unchanged First Examiner mark"}
                                                 className={`w-14 border rounded py-1 text-center font-bold focus:outline-none focus:border-amber-500 disabled:opacity-40 ${isEditedMark(lecturerMarks[question.id], examinerMarks[question.id]) ? "text-rose-700 bg-rose-100 border-rose-200" : "bg-white border-amber-200"}`}

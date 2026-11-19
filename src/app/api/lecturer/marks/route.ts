@@ -7,11 +7,13 @@ import {
   normaliseCaComponents,
   normaliseFinalBlueprint,
   normaliseFinalMarkRow,
+  normaliseFinalMarks,
   sanitiseMarkRow,
   toErrorMessage,
   type MarkRowLike,
   type SanitisedRow,
 } from "@/lib/lecturer-marks";
+import { mirrorFirstMarkChanges } from "@/lib/second-examiner";
 
 export const dynamic = "force-dynamic";
 
@@ -61,8 +63,13 @@ export async function GET(request: Request) {
  *   deletedIndexes?: string[]      // roster rows the lecturer removed client-side
  * }
  *
- * Saves the Active Lecturer's own ledger (CA + final exam marks). Never touches
- * `secondExamMarks` — that column belongs to the Second Examiner.
+ * Saves the Active Lecturer's own ledger (CA + final exam marks). The
+ * `secondExamMarks` column belongs to the Second Examiner and is left alone,
+ * with one exception: when a First Examiner mark changes after the Second
+ * Examiner has already saved (a recall, a correction, a re-submit), the stored
+ * second mark for that question is reset to the new First Examiner value, so a
+ * stale copy can never shadow the correction. Corrections on questions the First
+ * Examiner did not touch are kept. See `mirrorFirstMarkChanges`.
  *
  * Guarantees:
  *  • Frozen (HOD lock) and post-finalisation marksheets are rejected.
@@ -149,9 +156,9 @@ export async function POST(request: Request) {
     // ── Plan the write: update existing rows, create new ones, delete removals ─
     const existing = await prisma.studentMark.findMany({
       where: { moduleCode },
-      select: { studentIndex: true, secondExamMarks: true },
+      select: { studentIndex: true, finalExamQuestionsMarks: true, secondExamMarks: true },
     });
-    const existingIndexes = new Set(existing.map(row => row.studentIndex));
+    const existingByIndex = new Map(existing.map(row => [row.studentIndex, row]));
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ops: any[] = [];
@@ -169,12 +176,21 @@ export async function POST(request: Request) {
         isEligible: row.isEligible,
       };
 
-      if (existingIndexes.has(row.studentIndex)) {
+      const previous = existingByIndex.get(row.studentIndex);
+      if (previous) {
         updated++;
+        // Keep a saved Second Examiner ledger in step with a changed First
+        // Examiner mark (null when nothing was saved or nothing changed).
+        const mirrored = mirrorFirstMarkChanges(
+          normaliseFinalMarks(previous.finalExamQuestionsMarks, finalBlueprint),
+          row.finalExamQuestionsMarks,
+          normaliseFinalMarks(previous.secondExamMarks, finalBlueprint)
+        );
         ops.push(
           prisma.studentMark.updateMany({
             where: { moduleCode, studentIndex: row.studentIndex },
-            data: payload,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            data: mirrored ? { ...payload, secondExamMarks: mirrored as any } : payload,
           })
         );
       } else {
